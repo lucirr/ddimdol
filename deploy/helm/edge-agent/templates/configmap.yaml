@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "edge-agent.fullname" . }}-config
+  labels:
+    {{- include "edge-agent.labels" . | nindent 4 }}
+data:
+  EDGE_ID: {{ .Values.env.EDGE_ID | quote }}
+  EDGE_NAME: {{ .Values.env.EDGE_NAME | quote }}
+  EDGE_REGION: {{ .Values.env.EDGE_REGION | quote }}
+  NATS_URL: {{ .Values.env.NATS_URL | quote }}
+  CENTRAL_API_URL: {{ .Values.env.CENTRAL_API_URL | quote }}
+  HARBOR_URL: {{ .Values.env.HARBOR_URL | quote }}
+  HEARTBEAT_INTERVAL: {{ .Values.env.HEARTBEAT_INTERVAL | quote }}

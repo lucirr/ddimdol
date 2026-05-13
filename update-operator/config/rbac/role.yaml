@@ -1,0 +1,14 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: update-operator-manager-role
+rules:
+- apiGroups: ["edgedip.io"]
+  resources: ["catalogpackages", "catalogreleases"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["edgedip.io"]
+  resources: ["catalogpackages/status", "catalogreleases/status"]
+  verbs: ["get", "update", "patch"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]

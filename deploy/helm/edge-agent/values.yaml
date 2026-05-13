@@ -1,0 +1,21 @@
+image:
+  repository: harbor.internal/edgedip/edge-agent
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+env:
+  EDGE_ID: ""
+  EDGE_NAME: ""
+  EDGE_REGION: ""
+  NATS_URL: ""
+  CENTRAL_API_URL: ""
+  HARBOR_URL: ""
+  HEARTBEAT_INTERVAL: "10s"
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi

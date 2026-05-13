@@ -1,0 +1,70 @@
+name: Edge Agent CI
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'edge-agent/**'
+  pull_request:
+    paths:
+      - 'edge-agent/**'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+      - name: Run tests
+        working-directory: edge-agent
+        run: go test ./... -v
+
+  build-static:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - name: Build static binary
+        working-directory: edge-agent
+        env:
+          CGO_ENABLED: 0
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          go build -ldflags="-s -w" \
+            -o bin/edge-agent-${{ matrix.goos }}-${{ matrix.goarch }} \
+            ./cmd/agent/...
+
+      - name: Generate checksum
+        run: |
+          sha256sum edge-agent/bin/edge-agent-${{ matrix.goos }}-${{ matrix.goarch }} \
+            > edge-agent/bin/edge-agent-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
+
+      - name: Sign binary with Cosign
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          cosign sign-blob --key env://COSIGN_PRIVATE_KEY \
+            edge-agent/bin/edge-agent-${{ matrix.goos }}-${{ matrix.goarch }} \
+            --output-signature edge-agent/bin/edge-agent-${{ matrix.goos }}-${{ matrix.goarch }}.sig
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: edge-agent-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: edge-agent/bin/

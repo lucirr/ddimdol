@@ -1,0 +1,162 @@
+╔════════════════════════════════════════════════════════════════════════════╗
+║                                                                            ║
+║          Edge DIP Central Control System - Local Development Setup         ║
+║                                                                            ║
+║                            SETUP COMPLETE ✓                               ║
+║                                                                            ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+LOCATION: /Users/lucirr/workspace/didimdol/deploy/local/
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📦 GENERATED FILES (9 files, 56 KB)
+
+Configuration:
+  ✓ docker-compose.yml      - Complete Docker services definition
+  ✓ .env.example            - Environment variables template
+  ✓ init-db.sql             - PostgreSQL initialization script
+  ✓ Makefile                - Convenient command shortcuts
+  ✓ .gitignore              - Git ignore patterns
+
+Automation:
+  ✓ quick-start.sh          - Automated setup script (executable)
+
+Documentation:
+  ✓ README.md               - Service documentation & usage
+  ✓ SETUP.md                - Detailed setup guide & troubleshooting
+  ✓ INDEX.md                - File index & quick reference
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🐳 SERVICES CONFIGURED
+
+PostgreSQL 16
+  Port:       5432
+  Database:   edgedip, keycloak
+  User:       edgedip
+  Password:   edgedip_secret
+  Features:   Health checks, automatic initialization, data persistence
+
+Redis 7
+  Port:       6379
+  Features:   AOF persistence, health checks, data persistence
+
+NATS 2.10
+  Ports:      4222 (client), 8222 (monitoring dashboard)
+  Features:   JetStream enabled, health checks, data persistence
+  Dashboard:  http://localhost:8222
+
+Keycloak 24.0
+  Port:       8180
+  Admin:      admin / admin
+  Realm:      edgedip
+  Database:   PostgreSQL (keycloak DB)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🚀 QUICK START
+
+Option 1: Automated (Recommended)
+  $ cd /Users/lucirr/workspace/didimdol/deploy/local
+  $ ./quick-start.sh
+
+Option 2: Manual
+  $ cd /Users/lucirr/workspace/didimdol/deploy/local
+  $ cp .env.example .env
+  $ make up
+  $ make status
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📋 ESSENTIAL COMMANDS
+
+Service Management:
+  make up                   Start all services
+  make down                 Stop services (keep data)
+  make reset                Full reset (delete data)
+  make logs                 Follow all logs
+  make ps                   Show running services
+  make status               Health check all services
+
+Service Access:
+  make postgres             PostgreSQL CLI
+  make redis                Redis CLI
+  make nats                 NATS logs
+  make keycloak-logs        Keycloak logs
+
+Maintenance:
+  make build                Rebuild Docker images
+  make clean                Clean up Docker resources
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔌 SERVICE ENDPOINTS
+
+PostgreSQL:
+  Connection String: postgres://edgedip:edgedip_secret@localhost:5432/edgedip
+  CLI Access:        make postgres
+
+Redis:
+  Connection URL:    redis://localhost:6379
+  CLI Access:        make redis
+
+NATS:
+  Client URL:        nats://localhost:4222
+  Dashboard:         http://localhost:8222
+  Logs:              make nats
+
+Keycloak:
+  Web Console:       http://localhost:8180
+  Admin User:        admin
+  Admin Password:    admin
+  Logs:              make keycloak-logs
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📖 DOCUMENTATION
+
+For quick overview:
+  → Start with README.md (service docs + usage)
+
+For detailed setup:
+  → See SETUP.md (complete guide + troubleshooting)
+
+For file reference:
+  → Check INDEX.md (file descriptions + navigation)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔧 NEXT STEPS
+
+1. Start the infrastructure:
+   $ make up
+
+2. Verify services are healthy:
+   $ make status
+
+3. In separate terminals, start your applications:
+   $ cd portal-api && make run      # Portal API
+   $ cd portal-web && npm run dev   # Portal Web
+
+4. Access your services:
+   API:       http://localhost:8080
+   Web:       http://localhost:5173
+   Keycloak:  http://localhost:8180
+   NATS:      http://localhost:8222
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ All configuration files are ready to use!
+
+Environment is configured for local development with:
+  • Automatic service initialization
+  • Health monitoring
+  • Data persistence
+  • Comprehensive documentation
+  • Easy management commands
+
+For troubleshooting, see SETUP.md
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Generated: 2026-05-13

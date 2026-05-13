@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "edge-agent.fullname" . }}
+  labels:
+    {{- include "edge-agent.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "edge-agent.name" . }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "edge-agent.name" . }}
+    spec:
+      hostPID: false
+      hostNetwork: false
+      containers:
+        - name: edge-agent
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "edge-agent.fullname" . }}-config
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: host-proc
+              mountPath: /host/proc
+              readOnly: true
+            - name: host-sys
+              mountPath: /host/sys
+              readOnly: true
+      volumes:
+        - name: host-proc
+          hostPath:
+            path: /proc
+        - name: host-sys
+          hostPath:
+            path: /sys

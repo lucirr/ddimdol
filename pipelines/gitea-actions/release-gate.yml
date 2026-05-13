@@ -1,0 +1,157 @@
+name: Release Gate (Security Check → Harbor → Notify)
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_name:
+        description: 'Package name'
+        required: true
+      version:
+        description: 'Version (semver)'
+        required: true
+      image_tag:
+        description: 'Docker image tag (SHA)'
+        required: true
+
+jobs:
+  security-gate:
+    runs-on: ubuntu-latest
+    outputs:
+      passed: ${{ steps.gate.outputs.passed }}
+      cve_summary: ${{ steps.trivy.outputs.summary }}
+      critical: ${{ steps.parse.outputs.critical }}
+      high: ${{ steps.parse.outputs.high }}
+      medium: ${{ steps.parse.outputs.medium }}
+      low: ${{ steps.parse.outputs.low }}
+    steps:
+      - name: Pull image from Harbor
+        run: |
+          docker login ${{ vars.HARBOR_URL }} \
+            -u ${{ secrets.HARBOR_USER }} \
+            -p ${{ secrets.HARBOR_PASSWORD }}
+          docker pull ${{ vars.HARBOR_URL }}/edgedip/${{ inputs.package_name }}:${{ inputs.image_tag }}
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ vars.HARBOR_URL }}/edgedip/${{ inputs.package_name }}:${{ inputs.image_tag }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: CVE scan (CRITICAL=0 gate)
+        id: trivy
+        run: |
+          TRIVY_EXIT=0
+          trivy image \
+            --severity CRITICAL,HIGH,MEDIUM,LOW \
+            --ignore-unfixed \
+            --format json \
+            --output trivy-critical.json \
+            ${{ vars.HARBOR_URL }}/edgedip/${{ inputs.package_name }}:${{ inputs.image_tag }} || TRIVY_EXIT=$?
+
+      - name: Parse CVE counts
+        id: parse
+        run: |
+          CRITICAL=$(cat trivy-critical.json | jq '[.Results[].Vulnerabilities // [] | .[] | select(.Severity=="CRITICAL")] | length' 2>/dev/null || echo "0")
+          HIGH=$(cat trivy-critical.json | jq '[.Results[].Vulnerabilities // [] | .[] | select(.Severity=="HIGH")] | length' 2>/dev/null || echo "0")
+          MEDIUM=$(cat trivy-critical.json | jq '[.Results[].Vulnerabilities // [] | .[] | select(.Severity=="MEDIUM")] | length' 2>/dev/null || echo "0")
+          LOW=$(cat trivy-critical.json | jq '[.Results[].Vulnerabilities // [] | .[] | select(.Severity=="LOW")] | length' 2>/dev/null || echo "0")
+          echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
+          echo "high=$HIGH" >> $GITHUB_OUTPUT
+          echo "medium=$MEDIUM" >> $GITHUB_OUTPUT
+          echo "low=$LOW" >> $GITHUB_OUTPUT
+
+      - name: Set gate result
+        id: gate
+        run: |
+          CRITICAL=$(cat trivy-critical.json | jq '[.Results[].Vulnerabilities // [] | .[] | select(.Severity=="CRITICAL")] | length' 2>/dev/null || echo "0")
+          HIGH=$(cat trivy-critical.json | jq '[.Results[].Vulnerabilities // [] | .[] | select(.Severity=="HIGH")] | length' 2>/dev/null || echo "0")
+          echo "HIGH vulnerabilities: $HIGH"
+          if [ "$CRITICAL" -gt "0" ]; then
+            echo "passed=false" >> $GITHUB_OUTPUT
+            echo "summary=CRITICAL=${CRITICAL},FAILED" >> $GITHUB_OUTPUT
+            echo "CRITICAL CVE count ($CRITICAL) exceeds threshold (0)"
+            exit 1
+          elif [ "$HIGH" -gt 3 ]; then
+            echo "passed=false" >> $GITHUB_OUTPUT
+            echo "summary=CRITICAL=0,HIGH=${HIGH},FAILED" >> $GITHUB_OUTPUT
+            echo "HIGH CVE count ($HIGH) exceeds threshold (3)"
+            exit 1
+          else
+            echo "passed=true" >> $GITHUB_OUTPUT
+            echo "summary=CRITICAL=0,PASSED" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Sign released image with Cosign
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          cosign sign --key env://COSIGN_PRIVATE_KEY \
+            --annotations "version=${{ inputs.version }}" \
+            --annotations "package=${{ inputs.package_name }}" \
+            ${{ vars.HARBOR_URL }}/edgedip/${{ inputs.package_name }}:${{ inputs.image_tag }}
+
+      - name: Tag as release version
+        run: |
+          docker tag \
+            ${{ vars.HARBOR_URL }}/edgedip/${{ inputs.package_name }}:${{ inputs.image_tag }} \
+            ${{ vars.HARBOR_URL }}/edgedip/${{ inputs.package_name }}:${{ inputs.version }}
+          docker push ${{ vars.HARBOR_URL }}/edgedip/${{ inputs.package_name }}:${{ inputs.version }}
+
+      - name: Upload SBOM and reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ inputs.package_name }}-${{ inputs.version }}
+          path: |
+            sbom.spdx.json
+            trivy-critical.json
+
+  notify-edges:
+    needs: security-gate
+    if: needs.security-gate.outputs.passed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify Central Portal API
+        id: create_release
+        run: |
+          RESPONSE=$(curl -sf --fail-with-body -X POST ${{ vars.PORTAL_API_URL }}/api/v1/releases \
+            -H "Authorization: Bearer ${{ secrets.PORTAL_API_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "package_name": "${{ inputs.package_name }}",
+              "version": "${{ inputs.version }}",
+              "artifact_digest": "sha256:${{ inputs.image_tag }}",
+              "image_ref": "${{ vars.HARBOR_URL }}/edgedip/${{ inputs.package_name }}:${{ inputs.version }}",
+              "sbom_uri": "${{ vars.PORTAL_API_URL }}/artifacts/sbom/${{ inputs.package_name }}-${{ inputs.version }}.spdx.json",
+              "signed_by": "ci-pipeline"
+            }')
+          RELEASE_ID=$(echo "$RESPONSE" | jq -r '.data.id // empty')
+          if [ -z "$RELEASE_ID" ] || [ "$RELEASE_ID" = "null" ]; then
+            echo "ERROR: Failed to get release_id from portal-api" >&2
+            echo "$RESPONSE" >&2
+            exit 1
+          fi
+          echo "release_id=$RELEASE_ID" >> $GITHUB_OUTPUT
+
+      - name: Upload CVE report to Portal API
+        run: |
+          curl -sf --fail-with-body -X PATCH ${{ vars.PORTAL_API_URL }}/api/v1/releases/${{ steps.create_release.outputs.release_id }}/cve-report \
+            -H "Authorization: Bearer ${{ secrets.PORTAL_API_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "critical": ${{ needs.security-gate.outputs.critical }},
+              "high": ${{ needs.security-gate.outputs.high }},
+              "medium": ${{ needs.security-gate.outputs.medium }},
+              "low": ${{ needs.security-gate.outputs.low }},
+              "sbom_uri": "${{ vars.PORTAL_API_URL }}/artifacts/sbom/${{ inputs.package_name }}-${{ inputs.version }}.spdx.json"
+            }'
+
+      - name: Publish release to NATS (via Portal API)
+        run: |
+          curl -sf --fail-with-body -X POST ${{ vars.PORTAL_API_URL }}/api/v1/releases/${{ steps.create_release.outputs.release_id }}/publish \
+            -H "Authorization: Bearer ${{ secrets.PORTAL_API_TOKEN }}"

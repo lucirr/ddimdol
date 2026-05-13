@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "portal-api.fullname" . }}-config
+  labels:
+    {{- include "portal-api.labels" . | nindent 4 }}
+data:
+  DATABASE_URL: {{ .Values.env.DATABASE_URL | quote }}
+  NATS_URL: {{ .Values.env.NATS_URL | quote }}
+  KEYCLOAK_URL: {{ .Values.env.KEYCLOAK_URL | quote }}
+  KEYCLOAK_REALM: {{ .Values.env.KEYCLOAK_REALM | quote }}
+  KEYCLOAK_CLIENT_ID: {{ .Values.env.KEYCLOAK_CLIENT_ID | quote }}
+  SERVER_PORT: {{ .Values.env.SERVER_PORT | quote }}
+  AGENT_PORT: {{ .Values.env.AGENT_PORT | quote }}

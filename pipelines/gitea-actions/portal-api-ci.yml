@@ -1,0 +1,97 @@
+name: Portal API CI
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'portal-api/**'
+  pull_request:
+    paths:
+      - 'portal-api/**'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+      - name: Run tests
+        working-directory: portal-api
+        run: go test ./... -v -coverprofile=coverage.out
+      - name: Coverage check (≥80%)
+        working-directory: portal-api
+        run: |
+          COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | tr -d '%')
+          echo "Coverage: ${COVERAGE}%"
+          if (( $(echo "$COVERAGE < 80" | bc -l) )); then
+            echo "Coverage below 80%"
+            exit 1
+          fi
+
+  build-and-scan:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        run: |
+          docker build -t portal-api:${{ github.sha }} ./portal-api
+          docker save portal-api:${{ github.sha }} -o portal-api.tar
+
+      - name: Generate SBOM (Syft)
+        uses: anchore/sbom-action@v0
+        with:
+          image: portal-api:${{ github.sha }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Scan for CVEs (Trivy)
+        uses: aquasecurity/trivy-action@master
+        with:
+          input: portal-api.tar
+          format: json
+          output: trivy-report.json
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+          ignore-unfixed: true
+
+      - name: Scan for CVEs (Grype - double check)
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+          grype portal-api:${{ github.sha }} --fail-on critical -o json > grype-report.json
+
+      - name: Login to Harbor
+        run: |
+          docker login ${{ vars.HARBOR_URL }} \
+            -u ${{ secrets.HARBOR_USER }} \
+            -p ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Tag and push to Harbor
+        run: |
+          docker tag portal-api:${{ github.sha }} ${{ vars.HARBOR_URL }}/edgedip/portal-api:${{ github.sha }}
+          docker push ${{ vars.HARBOR_URL }}/edgedip/portal-api:${{ github.sha }}
+
+      - name: Sign image with Cosign
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          cosign sign --key env://COSIGN_PRIVATE_KEY \
+            ${{ vars.HARBOR_URL }}/edgedip/portal-api:${{ github.sha }}
+
+      - name: Upload security reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports-${{ github.sha }}
+          path: |
+            sbom.spdx.json
+            trivy-report.json
+            grype-report.json

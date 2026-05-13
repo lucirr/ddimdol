@@ -1,0 +1,46 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: edge-agent
+  namespace: argocd
+spec:
+  generators:
+    - list:
+        elements:
+          - edgeId: edge-001
+            edgeName: edge-seoul-01
+            region: seoul
+            natsURL: nats://nats.central.internal:4222
+            centralURL: https://portal-api.central.internal
+          - edgeId: edge-002
+            edgeName: edge-busan-01
+            region: busan
+            natsURL: nats://nats.central.internal:4222
+            centralURL: https://portal-api.central.internal
+  template:
+    metadata:
+      name: 'edge-agent-{{edgeName}}'
+    spec:
+      project: default
+      source:
+        repoURL: http://gitea.internal/edgedip/infra
+        targetRevision: main
+        path: deploy/helm/edge-agent
+        helm:
+          values: |
+            env:
+              EDGE_ID: "{{edgeId}}"
+              EDGE_NAME: "{{edgeName}}"
+              EDGE_REGION: "{{region}}"
+              NATS_URL: "{{natsURL}}"
+              CENTRAL_API_URL: "{{centralURL}}"
+              HARBOR_URL: "http://harbor.{{edgeName}}.internal"
+      destination:
+        server: 'https://{{edgeName}}.k8s.internal:6443'
+        namespace: edgedip
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
