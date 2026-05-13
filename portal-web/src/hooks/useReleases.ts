@@ -32,3 +32,11 @@ export function useCreateRelease() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['releases'] }),
   })
 }
+
+export function usePublishRelease() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.post(`/releases/${id}/publish`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['releases'] }),
+  })
+}

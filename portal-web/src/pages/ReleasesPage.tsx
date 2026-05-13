@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useReleases, useCreateRelease } from '@/hooks/useReleases'
+import { useReleases, useCreateRelease, usePublishRelease } from '@/hooks/useReleases'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
@@ -23,9 +23,20 @@ export default function ReleasesPage() {
   const releases = data?.data ?? []
   const total = data?.meta?.total ?? 0
   const createRelease = useCreateRelease()
+  const publishRelease = usePublishRelease()
   const [open, setOpen] = useState(false)
   const [form, setForm] = useState({ package_name: '', version: '', artifact_digest: '', image_ref: '', signed_by: '' })
   const [formError, setFormError] = useState<string | null>(null)
+  const [publishError, setPublishError] = useState<{ id: string; message: string } | null>(null)
+
+  const handlePublish = async (id: string) => {
+    setPublishError(null)
+    try {
+      await publishRelease.mutateAsync(id)
+    } catch (err: unknown) {
+      setPublishError({ id, message: err instanceof Error ? err.message : '발행 중 오류가 발생했습니다.' })
+    }
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -64,10 +75,14 @@ export default function ReleasesPage() {
               <th className="px-4 py-3 text-left font-medium text-gray-600">상태</th>
               <th className="px-4 py-3 text-left font-medium text-gray-600">CVE</th>
               <th className="px-4 py-3 text-left font-medium text-gray-600">발행일</th>
+              <th className="px-4 py-3 text-left font-medium text-gray-600">액션</th>
             </tr>
           </thead>
           <tbody className="divide-y">
-            {releases.map((rel) => (
+            {releases.map((rel) => {
+              const canPublish = rel.status === 'SCANNED' || rel.status === 'SIGNED'
+              const isPublishing = publishRelease.isPending && publishRelease.variables === rel.id
+              return (
               <tr key={rel.id} className="hover:bg-gray-50">
                 <td className="px-4 py-3 font-medium">{rel.package_name}</td>
                 <td className="px-4 py-3 font-mono">{rel.version}</td>
@@ -83,10 +98,23 @@ export default function ReleasesPage() {
                 <td className="px-4 py-3 text-gray-600">
                   {rel.published_at ? new Date(rel.published_at).toLocaleString('ko-KR') : '-'}
                 </td>
+                <td className="px-4 py-3">
+                  {canPublish && (
+                    <div className="space-y-1">
+                      <Button size="sm" onClick={() => handlePublish(rel.id)} disabled={isPublishing}>
+                        {isPublishing ? '발행 중...' : '발행'}
+                      </Button>
+                      {publishError?.id === rel.id && (
+                        <p className="text-xs text-red-600">{publishError.message}</p>
+                      )}
+                    </div>
+                  )}
+                </td>
               </tr>
-            ))}
+              )
+            })}
             {releases.length === 0 && (
-              <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-400">릴리즈가 없습니다</td></tr>
+              <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-400">릴리즈가 없습니다</td></tr>
             )}
           </tbody>
         </table>
