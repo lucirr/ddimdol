@@ -5,20 +5,26 @@
 
 ---
 
+## 목차
+
+1. [개요](#개요)
+2. [설치](#설치)
+3. [오케스트레이션 모드](#오케스트레이션-모드)
+4. [매직 키워드](#매직-키워드)
+5. [설정](#설정)
+6. [MCP 도구](#mcp-도구)
+7. [훅 시스템](#훅-시스템)
+8. [기능](#기능)
+9. [문제 해결](#문제-해결)
+10. [실습](#실습)
+11. [oh-my-claudecode vs oh-my-openagent 비교](#oh-my-claudecode-vs-oh-my-openagent-비교)
+12. [참고 링크](#참고-링크)
+
+---
+
 ## 개요
 
-**oh-my-claudecode (OMC)** 는 Claude Code를 위한 멀티 에이전트 오케스트레이션 시스템입니다.  
-19개의 전문 에이전트, 스마트 모델 라우팅, 실시간 HUD 등을 제공하며, 별도 설정 없이 바로 사용할 수 있습니다.
-
-### 핵심 특징
-
-- **Zero-configuration**: 설치 후 바로 사용 가능
-- **19개 전문 에이전트**: 아키텍처, 리서치, 설계, 테스트 등 역할별 분리
-- **스마트 모델 라우팅**: 작업 복잡도에 따라 Haiku / Sonnet / Opus 자동 선택
-- **실시간 HUD**: 멀티 에이전트 진행 상황 실시간 표시
-- **스킬 학습 시스템**: 반복 패턴을 스킬로 저장·재사용
-- **알림 연동**: Telegram, Discord, Slack 지원
-- **Rate limit 자동 감지 및 재시도**
+**oh-my-claudecode (OMC)** 는 Claude Code를 위한 멀티 에이전트 오케스트레이션 시스템으로 복잡한 코딩 작업을 여러 전문 AI 에이전트가 협업하여 병렬로 처리하며 수행합니다.
 
 ---
 
@@ -37,25 +43,24 @@
 Claude Code 세션 안에서 순서대로 실행합니다.
 
 ```bash
-# 1단계: Marketplace에 저장소 등록
+# Marketplace에 저장소 등록
 /plugin marketplace add https://github.com/Yeachan-Heo/oh-my-claudecode
 
-# 2단계: 플러그인 설치 (스코프 선택 필요)
+# 플러그인 설치 (스코프 선택 필요)
 /plugin install oh-my-claudecode
 
-# 3단계: 플러그인 리로드 (설치 직후 반드시 실행)
+# 플러그인 리로드 (설치 직후 반드시 실행)
 /reload-plugins
 
-# 4단계: OMC 초기화 (Claude Code 세션 내에서)
+# OMC 초기화 (Claude Code 세션 내에서)
 /omc-setup
 
-# 5단계: Claude Code 재시작 (설치 적용)
 # Claude Code를 완전히 종료 후 다시 실행
 ```
 
 > `omc-setup`은 환경에 맞는 설정을 자동으로 구성해줍니다.
 
-#### 2단계 상세: 플러그인 설치 스코프 선택
+#### 플러그인 설치 스코프 선택
 
 `/plugin install` 실행 시 적용 범위를 선택하는 프롬프트가 나타납니다.
 
@@ -80,7 +85,7 @@ omc --version
 
 ## 오케스트레이션 모드
 
-### 1. Team 모드 (권장)
+### 1. Team 모드
 
 단계별 파이프라인으로 작업을 처리하는 기본 모드입니다.
 
@@ -159,7 +164,7 @@ ultrawork: 모든 컴포넌트에 단위 테스트 추가
 소크라테스식 요구사항 명확화 모드입니다. 아이디어가 막연할 때 먼저 사용하세요.
 
 ```
-/deep-interview 새 프로젝트 시작
+deep-interview: 새 프로젝트 시작
 ```
 
 ---
@@ -180,20 +185,7 @@ ultrawork: 모든 컴포넌트에 단위 테스트 추가
 | `ralplan` | 반복적 계획 합의 | `ralplan this feature` |
 | `deep-interview` | 소크라테스식 요구사항 명확화 | `deep-interview "vague idea"` |
 
-> **참고:** ralph 모드는 ultrawork의 병렬 실행을 자동으로 포함합니다. 두 키워드를 함께 쓸 필요가 없습니다.
-
 ---
-
-## 에이전트 시스템
-
-19개 전문 에이전트가 4개 레인으로 구성됩니다.
-
-| 레인 | 역할 |
-|------|------|
-| **Build/Analysis** | 구현, 코드 분석 |
-| **Review** | 코드 리뷰, 품질 검사 |
-| **Domain** | 아키텍처, 보안, 성능 전문가 |
-| **Coordination** | 에이전트 간 조율 |
 
 ### 모델 라우팅 전략
 
@@ -204,62 +196,6 @@ Opus    → 복잡한 아키텍처 결정, 심층 분석
 ```
 
 ---
-
-## 스킬 시스템
-
-반복되는 패턴을 스킬로 저장하여 재사용합니다.
-
-### 스킬 3계층
-
-1. **Execution** — 기본 실행 패턴
-2. **Enhancement** — 작업 개선 패턴
-3. **Guarantee** — 품질 보장 패턴
-
-### 스킬 저장 및 사용
-
-```bash
-# 현재 작업을 스킬로 저장
-/save-skill my-api-pattern
-
-# 저장된 스킬 목록 확인
-/list-skills
-
-# 스킬 적용
-/use-skill my-api-pattern
-```
-
----
-
-## Notepad Wisdom 시스템
-
-세션 간 컨텍스트를 유지하는 메모 시스템입니다.
-
-```
-학습(Learnings) → 결정(Decisions) → 이슈(Issues) → 문제(Problems)
-```
-
-- 세션이 끝나도 중요한 결정사항과 패턴이 유지됩니다
-- 다음 세션에서 이전 컨텍스트를 자동으로 활용합니다
-
----
-
-## HUD 상태바
-
-멀티 에이전트 작업의 실시간 진행 상황을 표시합니다.
-
-```bash
-# HUD 활성화
-/hud on
-
-# 상태 확인
-/status
-```
-
-표시 항목:
-- 현재 활성 에이전트 수
-- 각 에이전트의 진행 단계
-- 모델 사용량 및 비용
-- Rate limit 상태
 
 ---
 
@@ -287,47 +223,6 @@ Opus    → 복잡한 아키텍처 결정, 심층 분석
 ### 전역 설정 (`~/.omc/config.json`)
 
 모든 프로젝트에 적용되는 기본 설정입니다.
-
----
-
-## 알림 연동
-
-### Telegram
-
-```json
-{
-  "notifications": {
-    "telegram": {
-      "token": "BOT_TOKEN",
-      "chatId": "CHAT_ID"
-    }
-  }
-}
-```
-
-### Discord
-
-```json
-{
-  "notifications": {
-    "discord": {
-      "webhookUrl": "WEBHOOK_URL"
-    }
-  }
-}
-```
-
-### Slack
-
-```json
-{
-  "notifications": {
-    "slack": {
-      "webhookUrl": "WEBHOOK_URL"
-    }
-  }
-}
-```
 
 ---
 
@@ -365,7 +260,7 @@ export OMC_DISABLE_HOOKS=true
 
 ---
 
-## 빠른 시작 예시
+## 기능
 
 ### 새 기능 개발
 
@@ -422,14 +317,122 @@ brew install tmux
 ### 진단
 
 ```bash
-omc --diagnostics
+/omc --diagnostics
+```
+
+---
+
+## 실습
+
+Claude Code에 oh-my-claudecode를 설치하고 실행해보는 간단한 예제입니다.
+
+### 설치
+
+터미널에서 실행.
+
+```bash
+mkdir omc-practice && cd omc-practice
+git init
+claude  # Claude Code 실행
+
+/plugin marketplace add https://github.com/Yeachan-Heo/oh-my-claudecode
+
+/plugin install oh-my-claudecode
+
+/reload-plugins
+
+/omc-setup
+
+/exit
+# Claude Code를 완전히 종료 후 다시 실행
+```
+
+### 실행
+
+Claude 터미널 또는 VS Code 에서 실행.
+
+#### step 1: Plan — 요구사항 명확할때
+
+즉시 구현 계획 문서 작성 
+
+```bash
+plan: 간단한 Todo list UI를 React로 만들어줘 
+```
+
+#### * step 1: Deep Interview — 아이디어 막연할 때 요구사항 명확화
+
+대화 후 스펙 확정,
+plan 파일로 저장도 가능,
+이어서 autopilot, team 자동 실행도 가능
+
+```bash
+deep-interview: 간단한 Todo list UI를 React로 만들어줘 
+```
+
+#### step 2: Autopilot — 전체 뼈대 자동 생성
+
+탐색 → 계획 → 구현 → QA → 검증 단계 자동 실행
+
+plan 없이 바로 실행도 가능 (autopilot: 간단한 Todo list UI를 React로 만들어줘)
+
+```bash
+autopilot: plan 결과 내용 또는 plan 파일  붙혀넣기
+```
+
+#### step 3: Team — 추가 기능 병렬 구현
+
+plan → prd → exec → verify → fix 순서로 파이프라인 실행
+
+```bash
+# 워커 에이전트 2개가 병렬로 파일을 나눠 작성
+# :executor = 구현 전문 에이전트
+/team 2:executor "Todo 완료 항목 필터링 기능 추가"
+```
+
+#### step 4: Ultrawork — 독립 작업 일괄 처리
+
+순서 없이 동시에 처리해도 되는 작업들 처리
+
+team과 달리 파이프라인 없음 — 그냥 최대한 동시에 처리
+
+```bash
+ulw: 모든 컴포넌트 파일에 Jest 단위 테스트 작성
+```
+
+#### step 5: Ralph — 품질 기준 달성까지 반복
+
+완료 조건이 있고 자동 반복이 필요한 마무리 작업
+완료 조건이 측정 가능할수록 효과적 (빌드 성공, 커버리지 %, 에러 0개)
+ultrawork 병렬 실행을 내부적으로 포함하므로 ulw + ralph 같이 쓸 필요 없음
+
+```bash
+# 테스트 작성 → test -cover 실행 → 80% 미달 → 추가 작성 → 재검증 → 80% 달성 시 자동 종료
+ralph: 테스트 커버리지 80% 이상으로 만들어줘
+```
+
+#### 전체 흐름
+
+```
+[아이디어]
+      ↓
+plan 또는 deep-interview   → 요구사항 구체화
+      ↓
+autopilot        → 전체 뼈대 자동 생성
+      ↓
+team             → 추가 기능 병렬 구현
+      ↓
+ulw              → 독립 작업 일괄 처리
+      ↓
+ralph            → 품질 기준 달성까지 반복
+      ↓
+[배포 가능한 프로젝트]
 ```
 
 ---
 
 ## oh-my-claudecode vs oh-my-openagent 비교
 
-> oh-my-openagent (omo): https://github.com/code-yeongyu/oh-my-openagent
+oh-my-claudecode(OMC) 는 Claude Code CLI 위에서 슬래시 커맨드로 멀티에이전트 개발 워크플로우를 자동화하는 오케스트레이션인 반면, oh-my-openagent 는 OpenAI Agents SDK 기반으로 Python 코드로 에이전트 간 핸드오프와 도구 호출을 정의하는 범용 에이전트 앱 구축 프레임워크입니다.
 
 ### 한눈에 비교
 
