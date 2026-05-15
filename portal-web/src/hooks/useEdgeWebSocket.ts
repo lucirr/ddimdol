@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import { getAccessToken } from '@/lib/auth'
 
 interface HeartbeatEvent {
   edge_id: string
@@ -21,11 +22,14 @@ export function useEdgeWebSocket() {
   const mountedRef = useRef(true)
 
   const connect = useCallback(() => {
-    const wsUrl = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080')
+    const token = getAccessToken()
+    if (!token) return
+
+    const wsUrl = window.location.origin
       .replace('http://', 'ws://')
       .replace('https://', 'wss://')
 
-    const ws = new WebSocket(`${wsUrl}/api/v1/ws/edges`)
+    const ws = new WebSocket(`${wsUrl}/api/v1/ws/edges?access_token=${encodeURIComponent(token)}`)
     wsRef.current = ws
 
     ws.onopen = () => {

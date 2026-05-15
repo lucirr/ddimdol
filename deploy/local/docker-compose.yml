@@ -47,9 +47,12 @@ services:
       KC_DB_PASSWORD: edgedip_secret
       KC_HOSTNAME_STRICT: "false"
       KC_HTTP_ENABLED: "true"
+      KC_HOSTNAME_STRICT_HTTPS: "false"
     ports:
       - "8180:8080"
-    command: start-dev
+    volumes:
+      - ./keycloak:/opt/keycloak/data/import:ro
+    command: start-dev --import-realm
     depends_on:
       postgres:
         condition: service_healthy

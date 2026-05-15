@@ -1,0 +1,65 @@
+{
+  "realm": "edgedip",
+  "enabled": true,
+  "sslRequired": "none",
+  "displayName": "Edge DIP",
+  "roles": {
+    "realm": [
+      {
+        "name": "central-operator",
+        "description": "Central portal operator"
+      },
+      {
+        "name": "edge-admin",
+        "description": "Edge administrator"
+      },
+      {
+        "name": "auditor",
+        "description": "Read-only auditor"
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "portal-web",
+      "name": "Portal Web",
+      "enabled": true,
+      "publicClient": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": [
+        "http://localhost:5173/auth/callback",
+        "http://127.0.0.1:5173/auth/callback"
+      ],
+      "webOrigins": [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:5173/login##http://127.0.0.1:5173/login"
+      }
+    }
+  ],
+  "users": [
+    {
+      "username": "portal-admin",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Portal",
+      "lastName": "Admin",
+      "realmRoles": [
+        "central-operator"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "portal-admin",
+          "temporary": false
+        }
+      ]
+    }
+  ]
+}

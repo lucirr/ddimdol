@@ -177,6 +177,8 @@ docker compose up -d
 | NATS | `localhost:4222` (모니터링: `localhost:8222`) |
 | Keycloak | `http://localhost:8180` (admin / admin) |
 
+로컬 Keycloak은 `edgedip` realm과 `portal-web` 클라이언트를 import합니다. 포털 로그인 테스트 계정은 `portal-admin / portal-admin`입니다.
+
 ### Portal API 실행
 
 ```bash
@@ -193,6 +195,8 @@ yarn install
 yarn dev
 # → http://localhost:5173
 ```
+
+포털 로그인은 `http://localhost:5173/login`에서 Keycloak로 리다이렉트됩니다.
 
 ### Edge Agent 실행
 

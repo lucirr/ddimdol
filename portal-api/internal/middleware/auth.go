@@ -37,15 +37,21 @@ func Auth() gin.HandlerFunc {
 			return
 		}
 
+		token := ""
 		authHeader := c.GetHeader("Authorization")
-		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+		if strings.HasPrefix(authHeader, "Bearer ") {
+			token = strings.TrimPrefix(authHeader, "Bearer ")
+		} else if queryToken := c.Query("access_token"); queryToken != "" {
+			token = queryToken
+		}
+
+		if token == "" {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing or invalid authorization header"})
 			return
 		}
 
 		// TODO: Validate JWT signature against Keycloak JWKS endpoint.
 		// Signature validation is currently pending — only claims are parsed here.
-		token := strings.TrimPrefix(authHeader, "Bearer ")
 		sub := parseJWTSub(token)
 		if sub == "" {
 			sub = "unknown"
@@ -59,10 +65,11 @@ func Auth() gin.HandlerFunc {
 // Returns empty string on any parse failure.
 func parseJWTSub(token string) string {
 	parts := strings.Split(token, ".")
-	if len(parts) < 2 {
+	if len(parts) < 3 {
 		return ""
 	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	// JWT is always header.payload.signature — payload is the second-to-last part
+	payload, err := base64.RawURLEncoding.DecodeString(parts[len(parts)-2])
 	if err != nil {
 		// Try standard encoding as fallback
 		payload, err = base64.StdEncoding.DecodeString(parts[1])
