@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
-import { completeLogin } from '@/lib/auth'
+import { clearAuth, completeLogin } from '@/lib/auth'
 
 export default function AuthCallbackPage() {
   const navigate = useNavigate()
@@ -30,7 +30,11 @@ export default function AuthCallbackPage() {
     completeLogin(code, state)
       .then(() => navigate('/dashboard', { replace: true }))
       .catch((err) => {
-        setError(err instanceof Error ? err.message : '로그인 처리 중 오류가 발생했습니다.')
+        clearAuth()
+        const message = err && typeof err === 'object' && 'message' in err
+          ? String(err.message)
+          : '로그인 처리 중 오류가 발생했습니다.'
+        setError(message)
       })
   }, [navigate, searchParams])
 

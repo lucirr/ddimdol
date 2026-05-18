@@ -31,6 +31,12 @@ export interface TokenClaims {
   exp?: number
 }
 
+export interface AuthError {
+  message: string
+  status: number
+  detail?: string
+}
+
 function base64UrlEncodeBytes(bytes: Uint8Array) {
   let value = ''
   bytes.forEach((byte) => {
@@ -166,7 +172,13 @@ export async function completeLogin(code: string, state: string) {
   )
 
   if (!response.ok) {
-    throw new Error('Keycloak 토큰 교환에 실패했습니다.')
+    const detail = await response.text().catch(() => undefined)
+    const err: AuthError = {
+      message: 'Keycloak 토큰 교환에 실패했습니다.',
+      status: response.status,
+      detail,
+    }
+    throw err
   }
 
   const tokens = (await response.json()) as TokenSet
