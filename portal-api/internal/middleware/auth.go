@@ -3,6 +3,7 @@ package middleware
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -10,6 +11,15 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
+)
+
+type ParseFailReason string
+
+const (
+	MalformedSegments   ParseFailReason = "malformed_segments"
+	Base64DecodeFailed  ParseFailReason = "base64_decode_failed"
+	JSONUnmarshalFailed ParseFailReason = "json_unmarshal_failed"
+	SubMissing          ParseFailReason = "sub_missing"
 )
 
 var (
@@ -52,37 +62,42 @@ func Auth() gin.HandlerFunc {
 
 		// TODO: Validate JWT signature against Keycloak JWKS endpoint.
 		// Signature validation is currently pending — only claims are parsed here.
-		sub := parseJWTSub(token)
-		if sub == "" {
-			sub = "unknown"
+		sub, reason, err := parseJWTClaims(token)
+		if err != nil {
+			authLogger.Warn("jwt parse failed",
+				zap.String("reason", string(reason)),
+				zap.String("path", c.Request.URL.Path),
+				zap.String("remote_ip", c.ClientIP()),
+			)
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid_token"})
+			return
 		}
 		c.Set("user_id", sub)
 		c.Next()
 	}
 }
 
-// parseJWTSub extracts the "sub" claim from a JWT without verifying its signature.
-// Returns empty string on any parse failure.
-func parseJWTSub(token string) string {
+// parseJWTClaims extracts the "sub" claim from a JWT without verifying its signature.
+// TODO(PR-2): JWKS 기반 서명 검증 후 realm_access.roles 추출 예정.
+func parseJWTClaims(token string) (sub string, reason ParseFailReason, err error) {
 	parts := strings.Split(token, ".")
 	if len(parts) < 3 {
-		return ""
+		return "", MalformedSegments, fmt.Errorf("token has %d parts, need at least 3", len(parts))
 	}
-	// JWT is always header.payload.signature — payload is the second-to-last part
-	payload, err := base64.RawURLEncoding.DecodeString(parts[len(parts)-2])
-	if err != nil {
-		// Try standard encoding as fallback
-		payload, err = base64.StdEncoding.DecodeString(parts[1])
-		if err != nil {
-			return ""
+	payload, decodeErr := base64.RawURLEncoding.DecodeString(parts[len(parts)-2])
+	if decodeErr != nil {
+		payload, decodeErr = base64.StdEncoding.DecodeString(parts[1])
+		if decodeErr != nil {
+			return "", Base64DecodeFailed, fmt.Errorf("base64 decode failed: %w", decodeErr)
 		}
 	}
 	var claims map[string]any
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		return ""
+	if jsonErr := json.Unmarshal(payload, &claims); jsonErr != nil {
+		return "", JSONUnmarshalFailed, fmt.Errorf("json unmarshal failed: %w", jsonErr)
 	}
-	if sub, ok := claims["sub"].(string); ok {
-		return sub
+	subVal, ok := claims["sub"].(string)
+	if !ok || subVal == "" {
+		return "", SubMissing, fmt.Errorf("sub claim missing or not a string")
 	}
-	return ""
+	return subVal, "", nil
 }
