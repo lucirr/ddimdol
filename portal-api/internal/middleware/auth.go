@@ -37,9 +37,7 @@ func Auth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if os.Getenv("DEV_MODE") == "true" {
 			devModeWarnOnce.Do(func() {
-				if authLogger != nil {
-					authLogger.Warn("DEV_MODE enabled: authentication is bypassed. DO NOT USE IN PRODUCTION.")
-				}
+				authLogger.Warn("DEV_MODE enabled: authentication is bypassed. DO NOT USE IN PRODUCTION.")
 			})
 			c.Set("user_id", "dev-user")
 			c.Set("role", "central-operator")
@@ -84,12 +82,9 @@ func parseJWTClaims(token string) (sub string, reason ParseFailReason, err error
 	if len(parts) < 3 {
 		return "", MalformedSegments, fmt.Errorf("token has %d parts, need at least 3", len(parts))
 	}
-	payload, decodeErr := base64.RawURLEncoding.DecodeString(parts[len(parts)-2])
+	payload, decodeErr := base64.RawURLEncoding.DecodeString(parts[1])
 	if decodeErr != nil {
-		payload, decodeErr = base64.StdEncoding.DecodeString(parts[1])
-		if decodeErr != nil {
-			return "", Base64DecodeFailed, fmt.Errorf("base64 decode failed: %w", decodeErr)
-		}
+		return "", Base64DecodeFailed, fmt.Errorf("base64 decode failed: %w", decodeErr)
 	}
 	var claims map[string]any
 	if jsonErr := json.Unmarshal(payload, &claims); jsonErr != nil {

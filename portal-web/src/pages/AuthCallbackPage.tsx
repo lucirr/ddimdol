@@ -31,10 +31,7 @@ export default function AuthCallbackPage() {
       .then(() => navigate('/dashboard', { replace: true }))
       .catch((err) => {
         clearAuth()
-        const message = err && typeof err === 'object' && 'message' in err
-          ? String(err.message)
-          : '로그인 처리 중 오류가 발생했습니다.'
-        setError(message)
+        setError(err instanceof Error ? err.message : '로그인 처리 중 오류가 발생했습니다.')
       })
   }, [navigate, searchParams])
 

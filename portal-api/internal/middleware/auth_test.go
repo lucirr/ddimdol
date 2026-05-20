@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -172,7 +173,7 @@ func TestAuthMiddleware_Integration(t *testing.T) {
 			if w.Code != tt.wantStatus {
 				t.Errorf("status: got %d, want %d (body: %s)", w.Code, tt.wantStatus, w.Body.String())
 			}
-			if tt.wantBody != "" && !contains(w.Body.String(), tt.wantBody) {
+			if tt.wantBody != "" && !strings.Contains(w.Body.String(), tt.wantBody) {
 				t.Errorf("body: got %s, want to contain %q", w.Body.String(), tt.wantBody)
 			}
 		})
@@ -190,19 +191,7 @@ func TestAuthMiddleware_DevMode(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("DEV_MODE: expected 200, got %d", w.Code)
 	}
-	if !contains(w.Body.String(), `"user_id":"dev-user"`) {
+	if !strings.Contains(w.Body.String(), `"user_id":"dev-user"`) {
 		t.Errorf("DEV_MODE: expected dev-user in body, got %s", w.Body.String())
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
-		func() bool {
-			for i := 0; i <= len(s)-len(substr); i++ {
-				if s[i:i+len(substr)] == substr {
-					return true
-				}
-			}
-			return false
-		}())
 }
