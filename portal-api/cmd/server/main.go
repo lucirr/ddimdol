@@ -92,9 +92,7 @@ func main() {
 	apiRouter.Use(gin.Recovery())
 	apiRouter.Use(middleware.AuditLogger())
 
-	apiRouter.GET("/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
-	})
+	apiRouter.GET("/health", handler.Health)
 
 	edgeH := handler.NewEdgeHandler(edgeRepo, logger)
 	releaseH := handler.NewReleaseHandler(releaseRepo, logger)
