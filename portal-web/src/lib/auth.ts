@@ -16,6 +16,12 @@ export const authConfig = {
   redirectUri: `${window.location.origin}/auth/callback`,
 }
 
+export interface AuthError {
+  message: string
+  status: number
+  detail?: string
+}
+
 export interface TokenSet {
   access_token: string
   refresh_token?: string
@@ -137,15 +143,15 @@ export async function startLogin() {
   window.location.href = `${authConfig.keycloakUrl}/realms/${authConfig.realm}/protocol/openid-connect/auth?${params}`
 }
 
-export async function completeLogin(code: string, state: string) {
+export async function completeLogin(code: string, state: string): Promise<void> {
   const expectedState = sessionStorage.getItem(OIDC_STATE_KEY)
   const codeVerifier = sessionStorage.getItem(PKCE_VERIFIER_KEY)
 
   if (!expectedState || state !== expectedState) {
-    throw new Error('로그인 상태 값이 일치하지 않습니다.')
+    throw { message: '로그인 상태 값이 일치하지 않습니다.', status: 400 } satisfies AuthError
   }
   if (!codeVerifier) {
-    throw new Error('PKCE verifier를 찾을 수 없습니다.')
+    throw { message: 'PKCE verifier를 찾을 수 없습니다.', status: 400 } satisfies AuthError
   }
 
   const body = new URLSearchParams({
@@ -166,7 +172,8 @@ export async function completeLogin(code: string, state: string) {
   )
 
   if (!response.ok) {
-    throw new Error('Keycloak 토큰 교환에 실패했습니다.')
+    const detail = await response.text().catch(() => undefined)
+    throw { message: 'Keycloak 토큰 교환에 실패했습니다.', status: response.status, detail } satisfies AuthError
   }
 
   const tokens = (await response.json()) as TokenSet

@@ -3,6 +3,7 @@ package middleware
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -52,37 +53,55 @@ func Auth() gin.HandlerFunc {
 
 		// TODO: Validate JWT signature against Keycloak JWKS endpoint.
 		// Signature validation is currently pending — only claims are parsed here.
-		sub := parseJWTSub(token)
-		if sub == "" {
-			sub = "unknown"
+		sub, role, err := parseJWTClaims(token)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+			return
 		}
 		c.Set("user_id", sub)
+		c.Set("role", role)
 		c.Next()
 	}
 }
 
-// parseJWTSub extracts the "sub" claim from a JWT without verifying its signature.
-// Returns empty string on any parse failure.
-func parseJWTSub(token string) string {
+// parseJWTClaims extracts sub and role claims from a JWT without verifying its signature.
+func parseJWTClaims(token string) (sub string, role string, err error) {
 	parts := strings.Split(token, ".")
 	if len(parts) < 3 {
-		return ""
+		return "", "", fmt.Errorf("malformed token")
 	}
-	// JWT is always header.payload.signature — payload is the second-to-last part
-	payload, err := base64.RawURLEncoding.DecodeString(parts[len(parts)-2])
-	if err != nil {
-		// Try standard encoding as fallback
-		payload, err = base64.StdEncoding.DecodeString(parts[1])
-		if err != nil {
-			return ""
+	payload, decodeErr := base64.RawURLEncoding.DecodeString(parts[1])
+	if decodeErr != nil {
+		payload, decodeErr = base64.StdEncoding.DecodeString(parts[1])
+		if decodeErr != nil {
+			return "", "", fmt.Errorf("failed to decode token payload: %w", decodeErr)
 		}
 	}
 	var claims map[string]any
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		return ""
+	if unmarshalErr := json.Unmarshal(payload, &claims); unmarshalErr != nil {
+		return "", "", fmt.Errorf("failed to parse token claims: %w", unmarshalErr)
 	}
-	if sub, ok := claims["sub"].(string); ok {
-		return sub
+	sub, _ = claims["sub"].(string)
+	if sub == "" {
+		return "", "", fmt.Errorf("missing sub claim")
+	}
+	role = extractRole(claims)
+	return sub, role, nil
+}
+
+// extractRole pulls the first role from realm_access.roles or the top-level roles array.
+func extractRole(claims map[string]any) string {
+	if ra, ok := claims["realm_access"].(map[string]any); ok {
+		if roles, ok := ra["roles"].([]any); ok && len(roles) > 0 {
+			if r, ok := roles[0].(string); ok {
+				return r
+			}
+		}
+	}
+	if roles, ok := claims["roles"].([]any); ok && len(roles) > 0 {
+		if r, ok := roles[0].(string); ok {
+			return r
+		}
 	}
 	return ""
 }
