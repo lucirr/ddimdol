@@ -13,6 +13,15 @@ import (
 	"go.uber.org/zap"
 )
 
+type ParseFailReason string
+
+const (
+	MalformedSegments   ParseFailReason = "malformed_segments"
+	Base64DecodeFailed  ParseFailReason = "base64_decode_failed"
+	JSONUnmarshalFailed ParseFailReason = "json_unmarshal_failed"
+	SubMissing          ParseFailReason = "sub_missing"
+)
+
 var (
 	devModeWarnOnce sync.Once
 	authLogger      *zap.Logger
@@ -53,41 +62,42 @@ func Auth() gin.HandlerFunc {
 
 		// TODO: Validate JWT signature against Keycloak JWKS endpoint.
 		// Signature validation is currently pending — only claims are parsed here.
-		sub, role, err := parseJWTClaims(token)
-		if err != nil || sub == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid or malformed token"})
+		sub, reason, err := parseJWTClaims(token)
+		if err != nil {
+			authLogger.Warn("jwt parse failed",
+				zap.String("reason", string(reason)),
+				zap.String("path", c.Request.URL.Path),
+				zap.String("remote_ip", c.ClientIP()),
+			)
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid_token"})
 			return
 		}
 		c.Set("user_id", sub)
-		c.Set("role", role)
 		c.Next()
 	}
 }
 
-// parseJWTClaims extracts "sub" and "realm_access.roles[0]" (or "role") claims
-// from a JWT without verifying its signature. Returns an error on parse failure.
-func parseJWTClaims(token string) (sub, role string, err error) {
+// parseJWTClaims extracts the "sub" claim from a JWT without verifying its signature.
+// TODO(PR-2): JWKS 기반 서명 검증 후 realm_access.roles 추출 예정.
+func parseJWTClaims(token string) (sub string, reason ParseFailReason, err error) {
 	parts := strings.Split(token, ".")
 	if len(parts) < 3 {
-		return "", "", fmt.Errorf("malformed token: expected 3 parts, got %d", len(parts))
+		return "", MalformedSegments, fmt.Errorf("token has %d parts, need at least 3", len(parts))
 	}
-	payload, decodeErr := base64.RawURLEncoding.DecodeString(parts[1])
+	payload, decodeErr := base64.RawURLEncoding.DecodeString(parts[len(parts)-2])
 	if decodeErr != nil {
-		return "", "", fmt.Errorf("failed to decode token payload: %w", decodeErr)
-	}
-	var claims map[string]any
-	if unmarshalErr := json.Unmarshal(payload, &claims); unmarshalErr != nil {
-		return "", "", fmt.Errorf("failed to parse token claims: %w", unmarshalErr)
-	}
-	sub, _ = claims["sub"].(string)
-	// Keycloak puts roles in realm_access.roles; fall back to a top-level "role" claim.
-	if realmAccess, ok := claims["realm_access"].(map[string]any); ok {
-		if roles, ok := realmAccess["roles"].([]any); ok && len(roles) > 0 {
-			role, _ = roles[0].(string)
+		payload, decodeErr = base64.StdEncoding.DecodeString(parts[1])
+		if decodeErr != nil {
+			return "", Base64DecodeFailed, fmt.Errorf("base64 decode failed: %w", decodeErr)
 		}
 	}
-	if role == "" {
-		role, _ = claims["role"].(string)
+	var claims map[string]any
+	if jsonErr := json.Unmarshal(payload, &claims); jsonErr != nil {
+		return "", JSONUnmarshalFailed, fmt.Errorf("json unmarshal failed: %w", jsonErr)
 	}
-	return sub, role, nil
+	subVal, ok := claims["sub"].(string)
+	if !ok || subVal == "" {
+		return "", SubMissing, fmt.Errorf("sub claim missing or not a string")
+	}
+	return subVal, "", nil
 }
