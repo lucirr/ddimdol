@@ -159,10 +159,9 @@ func main() {
 	agentRouter := gin.New()
 	agentRouter.Use(gin.Recovery())
 
-	agentH := handler.NewAgentHandler(edgeRepo, approvalRepo, deploymentRepo, natsSvc, logger)
+	agentH := handler.NewAgentHandler(edgeRepo, approvalRepo, deploymentRepo, logger)
 	agentV1 := agentRouter.Group("/agent/v1")
 	{
-		agentV1.POST("/heartbeat", agentH.Heartbeat)
 		agentV1.POST("/approval-requests", agentH.CreateApprovalRequest)
 		agentV1.POST("/download-progress", agentH.DownloadProgress)
 		agentV1.POST("/deployment-result", agentH.DeploymentResult)
