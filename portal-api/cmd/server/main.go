@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/didimdol/portal-api/internal/middleware"
 	"github.com/didimdol/portal-api/internal/repository/postgres"
 	"github.com/didimdol/portal-api/internal/service"
+	"github.com/didimdol/portal-api/internal/tlsconfig"
 )
 
 func main() {
@@ -170,7 +172,6 @@ func main() {
 	agentAddr := fmt.Sprintf(":%d", cfg.AgentPort)
 
 	logger.Info("starting portal-api server", zap.String("addr", apiAddr))
-	logger.Info("starting agent server (mTLS)", zap.String("addr", agentAddr))
 
 	errCh := make(chan error, 2)
 
@@ -180,11 +181,30 @@ func main() {
 		}
 	}()
 
-	go func() {
-		if err := http.ListenAndServe(agentAddr, agentRouter); err != nil {
-			errCh <- fmt.Errorf("agent server error: %w", err)
+	if cfg.AgentTLSEnabled {
+		logger.Info("starting agent server (mTLS enabled)", zap.String("addr", agentAddr))
+		tlsCfg, err := tlsconfig.ServerConfig(cfg.AgentTLSCAPath, cfg.AgentTLSCertPath, cfg.AgentTLSKeyPath)
+		if err != nil {
+			logger.Fatal("failed to build agent TLS config", zap.Error(err))
 		}
-	}()
+		agentSrv := &http.Server{
+			Addr:      agentAddr,
+			Handler:   agentRouter,
+			TLSConfig: tlsCfg,
+		}
+		go func() {
+			if err := agentSrv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errCh <- fmt.Errorf("agent server error: %w", err)
+			}
+		}()
+	} else {
+		logger.Info("starting agent server (TLS disabled)", zap.String("addr", agentAddr))
+		go func() {
+			if err := http.ListenAndServe(agentAddr, agentRouter); err != nil {
+				errCh <- fmt.Errorf("agent server error: %w", err)
+			}
+		}()
+	}
 
 	if err := <-errCh; err != nil {
 		logger.Fatal("server terminated", zap.Error(err))
