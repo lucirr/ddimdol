@@ -198,9 +198,13 @@ func main() {
 			}
 		}()
 	} else {
-		logger.Info("starting agent server (TLS disabled)", zap.String("addr", agentAddr))
+		// TLS disabled: bind to loopback only so the agent port is never reachable
+		// from outside the host. This mode is for local development only.
+		loopbackAddr := fmt.Sprintf("127.0.0.1:%d", cfg.AgentPort)
+		logger.Warn("agent server TLS DISABLED — bound to loopback only (127.0.0.1). DO NOT USE IN PRODUCTION.",
+			zap.String("addr", loopbackAddr))
 		go func() {
-			if err := http.ListenAndServe(agentAddr, agentRouter); err != nil {
+			if err := http.ListenAndServe(loopbackAddr, agentRouter); err != nil {
 				errCh <- fmt.Errorf("agent server error: %w", err)
 			}
 		}()
