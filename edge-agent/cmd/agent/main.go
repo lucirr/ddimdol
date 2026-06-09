@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -12,6 +13,7 @@ import (
 	"github.com/your-org/edge-agent/internal/config"
 	"github.com/your-org/edge-agent/internal/heartbeat"
 	"github.com/your-org/edge-agent/internal/reporter"
+	"github.com/your-org/edge-agent/internal/tlsconfig"
 	"github.com/your-org/edge-agent/internal/updater"
 	"go.uber.org/zap"
 )
@@ -67,9 +69,23 @@ func main() {
 	}
 
 	// -------------------------------------------------------------------------
-	// 4. Sub-systems
+	// 4. HTTP client with mTLS support
 	// -------------------------------------------------------------------------
-	rep := reporter.New(cfg.CentralAPIURL, cfg.EdgeID, logger)
+	var httpClient *http.Client
+	if cfg.TLSEnabled {
+		tlsCfg, err := tlsconfig.ClientConfig(cfg.TLSCAPath, cfg.TLSCertPath, cfg.TLSKeyPath)
+		if err != nil {
+			logger.Fatal("TLS config error", zap.Error(err))
+		}
+		httpClient = tlsconfig.HTTPClient(tlsCfg, 15*time.Second)
+	} else {
+		httpClient = &http.Client{Timeout: 15 * time.Second}
+	}
+
+	// -------------------------------------------------------------------------
+	// 5. Sub-systems
+	// -------------------------------------------------------------------------
+	rep := reporter.New(cfg.CentralAPIURL, cfg.EdgeID, httpClient, logger)
 
 	hbSender, err := heartbeat.New(
 		cfg.EdgeID, cfg.EdgeName, cfg.EdgeRegion,
@@ -87,11 +103,12 @@ func main() {
 		cfg.CentralAPIURL,
 		cfg.HarborURL,
 		rep,
+		httpClient,
 		logger,
 	)
 
 	// -------------------------------------------------------------------------
-	// 5. Start goroutines with a shared cancellable context
+	// 6. Start goroutines with a shared cancellable context
 	// -------------------------------------------------------------------------
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -105,7 +122,7 @@ func main() {
 	}()
 
 	// -------------------------------------------------------------------------
-	// 6. Wait for SIGTERM / SIGINT then graceful shutdown
+	// 7. Wait for SIGTERM / SIGINT then graceful shutdown
 	// -------------------------------------------------------------------------
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)

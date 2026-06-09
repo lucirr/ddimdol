@@ -27,7 +27,7 @@ func TestReport_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	rep := New(srv.URL, "edge-42", zap.NewNop())
+	rep := New(srv.URL, "edge-42", &http.Client{}, zap.NewNop())
 
 	result := DeploymentResult{
 		ApprovalID: "appr-001",
@@ -58,7 +58,7 @@ func TestReport_ServerError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	rep := New(srv.URL, "edge-42", zap.NewNop())
+	rep := New(srv.URL, "edge-42", &http.Client{}, zap.NewNop())
 
 	err := rep.Report(context.Background(), DeploymentResult{
 		ApprovalID: "appr-002",
@@ -71,7 +71,7 @@ func TestReport_ServerError(t *testing.T) {
 }
 
 func TestReport_InvalidURL(t *testing.T) {
-	rep := New("http://127.0.0.1:0", "edge-42", zap.NewNop())
+	rep := New("http://127.0.0.1:0", "edge-42", &http.Client{}, zap.NewNop())
 
 	err := rep.Report(context.Background(), DeploymentResult{
 		ApprovalID: "appr-003",

@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/your-org/edge-agent/internal/reporter"
@@ -62,6 +61,7 @@ func New(
 	js jetstream.JetStream,
 	centralURL, harborURL string,
 	rep *reporter.Reporter,
+	client *http.Client,
 	logger *zap.Logger,
 ) *Updater {
 	return &Updater{
@@ -70,7 +70,7 @@ func New(
 		centralURL: centralURL,
 		harborURL:  harborURL,
 		reporter:   rep,
-		client:     &http.Client{Timeout: 30 * time.Second},
+		client:     client,
 		logger:     logger,
 	}
 }
