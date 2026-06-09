@@ -30,6 +30,6 @@ func ServerConfig(caPath, certPath, keyPath string) (*tls.Config, error) {
 		Certificates: []tls.Certificate{cert},
 		ClientCAs:    pool,
 		ClientAuth:   tls.RequireAndVerifyClientCert,
-		MinVersion:   tls.VersionTLS12,
+		MinVersion:   tls.VersionTLS13,
 	}, nil
 }

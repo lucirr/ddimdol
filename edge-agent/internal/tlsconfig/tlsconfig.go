@@ -31,7 +31,7 @@ func ClientConfig(caPath, certPath, keyPath string) (*tls.Config, error) {
 	cfg := &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		RootCAs:      pool,
-		MinVersion:   tls.VersionTLS12,
+		MinVersion:   tls.VersionTLS13,
 	}
 
 	return cfg, nil

@@ -33,19 +33,15 @@ echo "==> Edge ID          : $EDGE_ID"
 echo "==> Force overwrite  : $FORCE"
 echo ""
 
-# Helper: skip or remove an existing file based on --force flag
-maybe_skip() {
+# Helper: return 0 (true) if the file needs to be generated.
+# If --force, remove the file so callers always recreate it.
+need_generate() {
     local file="$1"
-    if [[ -f "$file" ]]; then
-        if [[ "$FORCE" == "true" ]]; then
-            echo "  [overwrite] $file"
-            rm -f "$file"
-        else
-            echo "  [skip] $file already exists (use --force to regenerate)"
-            return 1
-        fi
+    if [[ "$FORCE" == "true" ]]; then
+        rm -f "$file"
+        return 0
     fi
-    return 0
+    [[ ! -f "$file" ]]
 }
 
 # ── 1. CA ─────────────────────────────────────────────────────────────────────
@@ -53,22 +49,16 @@ maybe_skip() {
 CA_KEY="$OUT_DIR/ca.key"
 CA_CRT="$OUT_DIR/ca.crt"
 
-CA_NEEDED=false
-maybe_skip "$CA_KEY" && CA_NEEDED=true || true
-if [[ "$CA_NEEDED" == "true" ]] || [[ ! -f "$CA_CRT" ]]; then
-    [[ -f "$CA_KEY" ]] || CA_NEEDED=true
-    if [[ "$CA_NEEDED" == "true" ]]; then
-        echo "==> Generating CA key and certificate (10 years)..."
-        openssl genrsa -out "$CA_KEY" 4096 2>/dev/null
-        openssl req -x509 -new -nodes \
-            -key "$CA_KEY" \
-            -sha256 \
-            -days 3650 \
-            -out "$CA_CRT" \
-            -subj "/C=KR/ST=Seoul/O=Local Dev/CN=Local Dev CA"
-        echo "  [created] $CA_KEY"
-        echo "  [created] $CA_CRT"
-    fi
+if need_generate "$CA_KEY" || need_generate "$CA_CRT"; then
+    rm -f "$CA_KEY" "$CA_CRT"  # 한 쪽만 없을 때 쌍 맞추기
+    echo "==> Generating CA key and certificate (10 years)..."
+    # WARNING: no passphrase — local development only. Use HSM or encrypted key for production CA.
+    openssl genrsa -out "$CA_KEY" 4096
+    openssl req -new -x509 -days 3650 -key "$CA_KEY" -out "$CA_CRT" \
+        -subj "/CN=EdgeDIP CA/O=EdgeDIP/C=KR"
+    echo "  created: $CA_KEY, $CA_CRT"
+else
+    echo "  skipped: $CA_KEY, $CA_CRT (use --force to regenerate)"
 fi
 
 # ── 2. Server certificate ─────────────────────────────────────────────────────
@@ -78,10 +68,7 @@ SERVER_CSR="$OUT_DIR/server.csr"
 SERVER_CRT="$OUT_DIR/server.crt"
 SERVER_EXT="$OUT_DIR/.server-ext.cnf"
 
-SERVER_NEEDED=false
-maybe_skip "$SERVER_KEY" && SERVER_NEEDED=true || true
-
-if [[ "$SERVER_NEEDED" == "true" ]]; then
+if need_generate "$SERVER_KEY"; then
     echo "==> Generating server key and certificate (2 years)..."
 
     cat > "$SERVER_EXT" <<EOF
@@ -125,10 +112,7 @@ CLIENT_CSR="$OUT_DIR/client-${EDGE_ID}.csr"
 CLIENT_CRT="$OUT_DIR/client-${EDGE_ID}.crt"
 CLIENT_EXT="$OUT_DIR/.client-ext.cnf"
 
-CLIENT_NEEDED=false
-maybe_skip "$CLIENT_KEY" && CLIENT_NEEDED=true || true
-
-if [[ "$CLIENT_NEEDED" == "true" ]]; then
+if need_generate "$CLIENT_KEY"; then
     echo "==> Generating client key and certificate for '$EDGE_ID' (2 years)..."
 
     cat > "$CLIENT_EXT" <<EOF

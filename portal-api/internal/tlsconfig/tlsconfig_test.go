@@ -22,8 +22,8 @@ func TestServerConfig_ValidCerts(t *testing.T) {
 	if cfg.ClientAuth != tls.RequireAndVerifyClientCert {
 		t.Errorf("expected ClientAuth = RequireAndVerifyClientCert, got: %v", cfg.ClientAuth)
 	}
-	if cfg.MinVersion != tls.VersionTLS12 {
-		t.Errorf("expected MinVersion = TLS 1.2, got: %v", cfg.MinVersion)
+	if cfg.MinVersion != tls.VersionTLS13 {
+		t.Errorf("expected MinVersion = TLS 1.3, got: %v", cfg.MinVersion)
 	}
 	if cfg.ClientCAs == nil {
 		t.Error("expected non-nil ClientCAs pool")
