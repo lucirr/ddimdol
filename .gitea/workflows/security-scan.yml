@@ -205,6 +205,11 @@ jobs:
           echo "$COSIGN_KEY" > cosign.key
           chmod 600 cosign.key
 
+      - name: Write Cosign public key
+        run: |
+          echo "${{ secrets.COSIGN_PUBLIC_KEY }}" > cosign.pub
+          chmod 600 cosign.pub
+
       - name: Sign image
         id: cosign
         run: |
@@ -216,9 +221,15 @@ jobs:
           SIG_REF=$(cosign triangulate -- "$IMAGE_REF" 2>/dev/null || echo "${IMAGE_REF}-sig")
           echo "signature=${SIG_REF}" >> "$GITHUB_OUTPUT"
 
-      - name: Cleanup key
+      - name: Verify signature (gate before notifying portal-api)
+        run: |
+          cosign verify \
+            --key cosign.pub \
+            -- "$IMAGE_REF"
+
+      - name: Cleanup keys
         if: always()
-        run: rm -f cosign.key
+        run: rm -f cosign.key cosign.pub
 
       - name: Update portal-api sign status (SIGNED)
         run: |

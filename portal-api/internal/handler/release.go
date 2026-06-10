@@ -5,11 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
-	"os/exec"
 	"regexp"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -183,41 +180,6 @@ func validateImageRef(imageRef string) error {
 	return nil
 }
 
-// verifyCosignSignature runs `cosign verify -- <imageRef>` with the configured
-// public key. The `--` separator prevents imageRef from being parsed as a flag.
-// COSIGN_PUBLIC_KEY env var must contain the PEM-encoded public key.
-func verifyCosignSignature(imageRef string) error {
-	if err := validateImageRef(imageRef); err != nil {
-		return err
-	}
-
-	pubKeyPEM := os.Getenv("COSIGN_PUBLIC_KEY")
-	if pubKeyPEM == "" {
-		return fmt.Errorf("COSIGN_PUBLIC_KEY is not configured")
-	}
-
-	tmp, err := os.CreateTemp("", "cosign-pub-*.pem")
-	if err != nil {
-		return fmt.Errorf("create temp key file: %w", err)
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.WriteString(pubKeyPEM); err != nil {
-		return fmt.Errorf("write temp key file: %w", err)
-	}
-	tmp.Close()
-
-	// `--` ensures imageRef is never parsed as a flag argument.
-	out, err := exec.Command("cosign", "verify",
-		"--key", tmp.Name(),
-		"--output", "text",
-		"--", imageRef,
-	).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("cosign verify: %w (output: %s)", err, strings.TrimSpace(string(out)))
-	}
-	return nil
-}
-
 func (h *ReleaseHandler) SignRelease(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -243,15 +205,6 @@ func (h *ReleaseHandler) SignRelease(c *gin.Context) {
 
 	if release.Status != domain.ReleaseStatusScanned {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "release must be SCANNED before signing"})
-		return
-	}
-
-	// Server-side verification: confirm the image is actually signed with our key.
-	if err := verifyCosignSignature(release.ImageRef); err != nil {
-		h.logger.Warn("cosign verification failed",
-			zap.String("image_ref", release.ImageRef),
-			zap.Error(err))
-		c.JSON(http.StatusBadRequest, gin.H{"error": "signature verification failed"})
 		return
 	}
 
