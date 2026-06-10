@@ -14,24 +14,47 @@ on:
         required: true
         type: string
 
-env:
-  PORTAL_API_URL: ${{ vars.PORTAL_API_URL }}       # e.g. https://portal-api.internal:8080
-  PORTAL_API_TOKEN: ${{ secrets.PORTAL_API_TOKEN }} # central-operator JWT or service account token
-  HARBOR_URL: ${{ vars.HARBOR_URL }}               # e.g. harbor.local
-  HARBOR_USER: ${{ secrets.HARBOR_USER }}
-  HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
-  COSIGN_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}    # cosign private key (PEM)
-  COSIGN_KEY_PASSWORD: ${{ secrets.COSIGN_KEY_PASSWORD }}
-
 jobs:
+  # ──────────────────────────────────────────────
+  # Job 0: 입력값 검증 — 이후 모든 Job의 선행 조건
+  # ──────────────────────────────────────────────
+  validate:
+    name: Validate Inputs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate release_id (UUID format)
+        env:
+          RELEASE_ID: ${{ github.event.inputs.release_id }}
+        run: |
+          if ! echo "$RELEASE_ID" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+            echo "::error::release_id is not a valid UUID: $RELEASE_ID"
+            exit 1
+          fi
+
+      - name: Validate image_ref (Harbor reference format)
+        env:
+          IMAGE_REF: ${{ github.event.inputs.image_ref }}
+        run: |
+          # 허용 형식: host[:port]/path/name:tag 또는 @sha256:...
+          if ! echo "$IMAGE_REF" | grep -qE '^[a-zA-Z0-9._:/-]+(@sha256:[a-f0-9]{64}|:[a-zA-Z0-9._-]+)$'; then
+            echo "::error::image_ref has an invalid format: $IMAGE_REF"
+            exit 1
+          fi
+
   # ──────────────────────────────────────────────
   # Job 1: SBOM 생성 (Syft)
   # ──────────────────────────────────────────────
   sbom:
     name: Generate SBOM
     runs-on: ubuntu-latest
+    needs: validate
     outputs:
       sbom_uri: ${{ steps.attach.outputs.sbom_uri }}
+    env:
+      IMAGE_REF: ${{ github.event.inputs.image_ref }}
+      HARBOR_URL: ${{ vars.HARBOR_URL }}
+      HARBOR_USER: ${{ secrets.HARBOR_USER }}
+      HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
     steps:
       - name: Log in to Harbor
         run: echo "$HARBOR_PASSWORD" | docker login "$HARBOR_URL" -u "$HARBOR_USER" --password-stdin
@@ -41,26 +64,22 @@ jobs:
           curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
             | sh -s -- -b /usr/local/bin
 
-      - name: Generate SBOM (SPDX JSON)
+      - name: Install oras
         run: |
-          syft "${{ github.event.inputs.image_ref }}" \
-            -o spdx-json=sbom.spdx.json
+          curl -sSfL https://github.com/oras-project/oras/releases/download/v1.1.0/oras_1.1.0_linux_amd64.tar.gz \
+            | tar -xz -C /usr/local/bin oras
+
+      - name: Generate SBOM (SPDX JSON)
+        run: syft "$IMAGE_REF" -o spdx-json=sbom.spdx.json
 
       - name: Attach SBOM to Harbor (OCI referrer)
         id: attach
         run: |
-          # Harbor 2.x 이상은 OCI referrer API를 지원합니다.
-          # oras CLI로 SBOM을 이미지 referrer로 attach합니다.
-          curl -sSfL https://github.com/oras-project/oras/releases/download/v1.1.0/oras_1.1.0_linux_amd64.tar.gz \
-            | tar -xz -C /usr/local/bin oras
-
-          SBOM_URI="${{ github.event.inputs.image_ref }}-sbom"
           oras attach \
             --artifact-type application/spdx+json \
-            "${{ github.event.inputs.image_ref }}" \
+            "$IMAGE_REF" \
             sbom.spdx.json:application/spdx+json
-
-          echo "sbom_uri=${SBOM_URI}" >> "$GITHUB_OUTPUT"
+          echo "sbom_uri=${IMAGE_REF}-sbom" >> "$GITHUB_OUTPUT"
 
   # ──────────────────────────────────────────────
   # Job 2: CVE 스캔 (Trivy)
@@ -74,6 +93,14 @@ jobs:
       high: ${{ steps.parse.outputs.high }}
       medium: ${{ steps.parse.outputs.medium }}
       low: ${{ steps.parse.outputs.low }}
+    env:
+      IMAGE_REF: ${{ github.event.inputs.image_ref }}
+      RELEASE_ID: ${{ github.event.inputs.release_id }}
+      PORTAL_API_URL: ${{ vars.PORTAL_API_URL }}
+      PORTAL_API_TOKEN: ${{ secrets.PORTAL_API_TOKEN }}
+      HARBOR_URL: ${{ vars.HARBOR_URL }}
+      HARBOR_USER: ${{ secrets.HARBOR_USER }}
+      HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
     steps:
       - name: Log in to Harbor
         run: echo "$HARBOR_PASSWORD" | docker login "$HARBOR_URL" -u "$HARBOR_USER" --password-stdin
@@ -89,7 +116,7 @@ jobs:
             --format json \
             --output trivy-report.json \
             --severity CRITICAL,HIGH,MEDIUM,LOW \
-            "${{ github.event.inputs.image_ref }}"
+            "$IMAGE_REF"
 
       - name: Parse severity counts
         id: parse
@@ -107,11 +134,11 @@ jobs:
                   if sev in counts:
                       counts[sev] += 1
 
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write(f"critical={counts['CRITICAL']}\n")
-              f.write(f"high={counts['HIGH']}\n")
-              f.write(f"medium={counts['MEDIUM']}\n")
-              f.write(f"low={counts['LOW']}\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"critical={counts['CRITICAL']}\n")
+              out.write(f"high={counts['HIGH']}\n")
+              out.write(f"medium={counts['MEDIUM']}\n")
+              out.write(f"low={counts['LOW']}\n")
 
           print(f"CRITICAL={counts['CRITICAL']} HIGH={counts['HIGH']} MEDIUM={counts['MEDIUM']} LOW={counts['LOW']}")
           EOF
@@ -124,22 +151,26 @@ jobs:
 
       - name: Update portal-api cve-report (SCANNED)
         run: |
+          # jq로 JSON 빌드 — 변수를 문자열 리터럴에 직접 삽입하지 않음
+          SBOM_URI="${{ needs.sbom.outputs.sbom_uri }}"
+          PAYLOAD=$(jq -nc \
+            --argjson critical "${{ steps.parse.outputs.critical }}" \
+            --argjson high     "${{ steps.parse.outputs.high }}" \
+            --argjson medium   "${{ steps.parse.outputs.medium }}" \
+            --argjson low      "${{ steps.parse.outputs.low }}" \
+            --arg     sbom_uri "$SBOM_URI" \
+            '{critical:$critical, high:$high, medium:$medium, low:$low, sbom_uri:$sbom_uri}')
+
           curl -fsSL -X PATCH \
-            "${PORTAL_API_URL}/api/v1/releases/${{ github.event.inputs.release_id }}/cve-report" \
+            "${PORTAL_API_URL}/api/v1/releases/${RELEASE_ID}/cve-report" \
             -H "Authorization: Bearer ${PORTAL_API_TOKEN}" \
             -H "Content-Type: application/json" \
-            -d '{
-              "critical": ${{ steps.parse.outputs.critical }},
-              "high":     ${{ steps.parse.outputs.high }},
-              "medium":   ${{ steps.parse.outputs.medium }},
-              "low":      ${{ steps.parse.outputs.low }},
-              "sbom_uri": "${{ needs.sbom.outputs.sbom_uri }}"
-            }'
+            --data "$PAYLOAD"
 
       - name: Fail if Critical CVEs found
         if: ${{ steps.parse.outputs.critical > 0 }}
         run: |
-          echo "::error::Critical CVEs found (${{ steps.parse.outputs.critical }}). Pipeline stopped — release will not be signed or published."
+          echo "::error::Critical CVEs found (${{ steps.parse.outputs.critical }}). Pipeline stopped."
           exit 1
 
   # ──────────────────────────────────────────────
@@ -149,13 +180,24 @@ jobs:
     name: Sign Image
     runs-on: ubuntu-latest
     needs: cve-scan
+    env:
+      IMAGE_REF: ${{ github.event.inputs.image_ref }}
+      RELEASE_ID: ${{ github.event.inputs.release_id }}
+      PORTAL_API_URL: ${{ vars.PORTAL_API_URL }}
+      PORTAL_API_TOKEN: ${{ secrets.PORTAL_API_TOKEN }}
+      HARBOR_URL: ${{ vars.HARBOR_URL }}
+      HARBOR_USER: ${{ secrets.HARBOR_USER }}
+      HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+      COSIGN_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+      COSIGN_KEY_PASSWORD: ${{ secrets.COSIGN_KEY_PASSWORD }}
     steps:
       - name: Log in to Harbor
         run: echo "$HARBOR_PASSWORD" | docker login "$HARBOR_URL" -u "$HARBOR_USER" --password-stdin
 
       - name: Install Cosign
         run: |
-          curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 \
+          curl -sSfL \
+            https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 \
             -o /usr/local/bin/cosign && chmod +x /usr/local/bin/cosign
 
       - name: Write Cosign key
@@ -168,16 +210,11 @@ jobs:
         run: |
           COSIGN_PASSWORD="$COSIGN_KEY_PASSWORD" cosign sign \
             --key cosign.key \
-            "${{ github.event.inputs.image_ref }}"
+            "$IMAGE_REF"
 
-          # 서명 다이제스트를 portal-api에 전달할 값으로 추출
-          SIG=$(COSIGN_PASSWORD="$COSIGN_KEY_PASSWORD" cosign verify \
-            --key cosign.key \
-            "${{ github.event.inputs.image_ref }}" 2>/dev/null \
-            | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[0].get('critical',{}).get('identity',{}).get('docker-reference','signed'))" 2>/dev/null \
-            || echo "signed")
-
-          echo "signature=${SIG}" >> "$GITHUB_OUTPUT"
+          # 서명 레퍼런스를 digest 형식으로 추출
+          SIG_REF=$(cosign triangulate "$IMAGE_REF" 2>/dev/null || echo "${IMAGE_REF}-sig")
+          echo "signature=${SIG_REF}" >> "$GITHUB_OUTPUT"
 
       - name: Cleanup key
         if: always()
@@ -185,23 +222,25 @@ jobs:
 
       - name: Update portal-api sign status (SIGNED)
         run: |
+          SIG="${{ steps.cosign.outputs.signature }}"
+          PAYLOAD=$(jq -nc --arg sig "$SIG" '{signature: $sig}')
+
           curl -fsSL -X PATCH \
-            "${PORTAL_API_URL}/api/v1/releases/${{ github.event.inputs.release_id }}/sign" \
+            "${PORTAL_API_URL}/api/v1/releases/${RELEASE_ID}/sign" \
             -H "Authorization: Bearer ${PORTAL_API_TOKEN}" \
             -H "Content-Type: application/json" \
-            -d '{
-              "signature": "${{ steps.cosign.outputs.signature }}",
-              "signed_by": "gitea-actions/security-scan"
-            }'
+            --data "$PAYLOAD"
 
       - name: Summary
         run: |
-          echo "## Security Scan Complete ✅" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Item | Value |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|------|-------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Image | \`${{ github.event.inputs.image_ref }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Release ID | \`${{ github.event.inputs.release_id }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Critical CVEs | ${{ needs.cve-scan.outputs.critical }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| High CVEs | ${{ needs.cve-scan.outputs.high }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Status | SIGNED — ready to publish |" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Security Scan Complete ✅"
+            echo ""
+            echo "| Item | Value |"
+            echo "|------|-------|"
+            echo "| Image | \`${IMAGE_REF}\` |"
+            echo "| Release ID | \`${RELEASE_ID}\` |"
+            echo "| Critical CVEs | ${{ needs.cve-scan.outputs.critical }} |"
+            echo "| High CVEs | ${{ needs.cve-scan.outputs.high }} |"
+            echo "| Status | SIGNED — ready to publish |"
+          } >> "$GITHUB_STEP_SUMMARY"

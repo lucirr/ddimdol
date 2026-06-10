@@ -3,8 +3,12 @@ package handler
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
+	"os"
+	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -155,6 +159,37 @@ func (h *ReleaseHandler) UpdateCveReport(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": release})
 }
 
+// verifyCosignSignature runs `cosign verify --key <pubkey-file> <imageRef>` and
+// returns the digest string on success. COSIGN_PUBLIC_KEY env var must contain
+// the PEM-encoded public key.
+func verifyCosignSignature(imageRef string) (string, error) {
+	pubKeyPEM := os.Getenv("COSIGN_PUBLIC_KEY")
+	if pubKeyPEM == "" {
+		return "", fmt.Errorf("COSIGN_PUBLIC_KEY is not configured")
+	}
+
+	// Write PEM to a temp file — cosign --key requires a file path.
+	tmp, err := os.CreateTemp("", "cosign-pub-*.pem")
+	if err != nil {
+		return "", fmt.Errorf("create temp key file: %w", err)
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.WriteString(pubKeyPEM); err != nil {
+		return "", fmt.Errorf("write temp key file: %w", err)
+	}
+	tmp.Close()
+
+	out, err := exec.Command("cosign", "verify",
+		"--key", tmp.Name(),
+		"--output", "text",
+		imageRef,
+	).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("cosign verify failed: %w\n%s", err, strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 func (h *ReleaseHandler) SignRelease(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -162,9 +197,10 @@ func (h *ReleaseHandler) SignRelease(c *gin.Context) {
 		return
 	}
 
+	// Signature field is informational (e.g. cosign digest ref); signed_by is
+	// derived from the authenticated JWT subject, not trusted from request body.
 	var req struct {
 		Signature string `json:"signature" binding:"required"`
-		SignedBy  string `json:"signed_by" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -182,8 +218,24 @@ func (h *ReleaseHandler) SignRelease(c *gin.Context) {
 		return
 	}
 
+	// Server-side verification: confirm the image is actually signed with our key.
+	if _, err := verifyCosignSignature(release.ImageRef); err != nil {
+		h.logger.Warn("cosign verification failed",
+			zap.String("image_ref", release.ImageRef),
+			zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("signature verification failed: %v", err)})
+		return
+	}
+
+	// Derive signed_by from the authenticated identity, not the request body.
+	callerID, _ := c.Get("user_id")
+	signedBy, _ := callerID.(string)
+	if signedBy == "" {
+		signedBy = "unknown"
+	}
+
 	release.Signature = req.Signature
-	release.SignedBy = req.SignedBy
+	release.SignedBy = signedBy
 	release.Status = domain.ReleaseStatusSigned
 
 	if err := h.repo.Save(c.Request.Context(), release); err != nil {

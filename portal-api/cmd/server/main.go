@@ -119,12 +119,12 @@ func main() {
 
 		releases := v1.Group("/releases")
 		{
-			releases.POST("", releaseH.CreateRelease)
+			releases.POST("", middleware.RequireRole("central-operator"), releaseH.CreateRelease)
 			releases.GET("", releaseH.ListReleases)
 			releases.GET("/:id", releaseH.GetRelease)
-			releases.PATCH("/:id/cve-report", releaseH.UpdateCveReport)
-			releases.PATCH("/:id/sign", releaseH.SignRelease)
-			releases.POST("/:id/publish", releaseH.PublishRelease)
+			releases.PATCH("/:id/cve-report", middleware.RequireRole("central-operator"), releaseH.UpdateCveReport)
+			releases.PATCH("/:id/sign", middleware.RequireRole("central-operator"), releaseH.SignRelease)
+			releases.POST("/:id/publish", middleware.RequireRole("central-operator"), releaseH.PublishRelease)
 		}
 
 		approvals := v1.Group("/approvals")
