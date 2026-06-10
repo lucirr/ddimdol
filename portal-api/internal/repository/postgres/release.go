@@ -25,7 +25,7 @@ func NewReleaseRepository(db *sqlx.DB) *ReleaseRepository {
 func (r *ReleaseRepository) FindAll(ctx context.Context) ([]*domain.Release, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, package_name, version, artifact_digest, image_ref, sbom_uri,
-		       cve_report, signature, signed_by, status, published_at, created_at
+		       cve_report, signature, signed_by, is_urgent, status, published_at, created_at
 		FROM releases
 		ORDER BY created_at DESC
 	`)
@@ -57,7 +57,7 @@ func (r *ReleaseRepository) FindPaged(ctx context.Context, page, limit int) (rep
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT COUNT(*) OVER() AS total,
 		       id, package_name, version, artifact_digest, image_ref, sbom_uri,
-		       cve_report, signature, signed_by, status, published_at, created_at
+		       cve_report, signature, signed_by, is_urgent, status, published_at, created_at
 		FROM releases
 		ORDER BY created_at DESC
 		LIMIT $1 OFFSET $2
@@ -75,7 +75,7 @@ func (r *ReleaseRepository) FindPaged(ctx context.Context, page, limit int) (rep
 		if err := rows.Scan(
 			&total,
 			&rel.ID, &rel.PackageName, &rel.Version, &rel.ArtifactDigest, &rel.ImageRef, &rel.SbomURI,
-			&cveReport, &rel.Signature, &rel.SignedBy, &rel.Status, &rel.PublishedAt, &rel.CreatedAt,
+			&cveReport, &rel.Signature, &rel.SignedBy, &rel.IsUrgent, &rel.Status, &rel.PublishedAt, &rel.CreatedAt,
 		); err != nil {
 			return repository.PageResult[domain.Release]{}, fmt.Errorf("release FindPaged scan: %w", err)
 		}
@@ -92,7 +92,7 @@ func (r *ReleaseRepository) FindPaged(ctx context.Context, page, limit int) (rep
 func (r *ReleaseRepository) FindByID(ctx context.Context, id uuid.UUID) (*domain.Release, error) {
 	row := r.db.QueryRowContext(ctx, `
 		SELECT id, package_name, version, artifact_digest, image_ref, sbom_uri,
-		       cve_report, signature, signed_by, status, published_at, created_at
+		       cve_report, signature, signed_by, is_urgent, status, published_at, created_at
 		FROM releases
 		WHERE id = $1
 	`, id)
@@ -116,8 +116,8 @@ func (r *ReleaseRepository) Save(ctx context.Context, rel *domain.Release) error
 	_, err = r.db.ExecContext(ctx, `
 		INSERT INTO releases
 			(id, package_name, version, artifact_digest, image_ref, sbom_uri,
-			 cve_report, signature, signed_by, status, published_at, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+			 cve_report, signature, signed_by, is_urgent, status, published_at, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 		ON CONFLICT (id) DO UPDATE SET
 			package_name    = EXCLUDED.package_name,
 			version         = EXCLUDED.version,
@@ -127,11 +127,12 @@ func (r *ReleaseRepository) Save(ctx context.Context, rel *domain.Release) error
 			cve_report      = EXCLUDED.cve_report,
 			signature       = EXCLUDED.signature,
 			signed_by       = EXCLUDED.signed_by,
+			is_urgent       = EXCLUDED.is_urgent,
 			status          = EXCLUDED.status,
 			published_at    = EXCLUDED.published_at
 	`,
 		rel.ID, rel.PackageName, rel.Version, rel.ArtifactDigest, rel.ImageRef, rel.SbomURI,
-		cveReport, rel.Signature, rel.SignedBy, rel.Status, rel.PublishedAt, rel.CreatedAt,
+		cveReport, rel.Signature, rel.SignedBy, rel.IsUrgent, rel.Status, rel.PublishedAt, rel.CreatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("release Save: %w", err)
@@ -155,7 +156,7 @@ func scanRelease(s scanner) (*domain.Release, error) {
 	var cveReport []byte
 	err := s.Scan(
 		&rel.ID, &rel.PackageName, &rel.Version, &rel.ArtifactDigest, &rel.ImageRef, &rel.SbomURI,
-		&cveReport, &rel.Signature, &rel.SignedBy, &rel.Status, &rel.PublishedAt, &rel.CreatedAt,
+		&cveReport, &rel.Signature, &rel.SignedBy, &rel.IsUrgent, &rel.Status, &rel.PublishedAt, &rel.CreatedAt,
 	)
 	if err != nil {
 		return nil, err

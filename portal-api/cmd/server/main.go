@@ -98,7 +98,7 @@ func main() {
 
 	edgeH := handler.NewEdgeHandler(edgeRepo, logger)
 	releaseH := handler.NewReleaseHandler(releaseRepo, logger)
-	approvalH := handler.NewApprovalHandler(approvalRepo, releaseRepo, edgeRepo, natsSvc, harborSvc, logger)
+	approvalH := handler.NewApprovalHandler(approvalRepo, releaseRepo, edgeRepo, deploymentRepo, natsSvc, harborSvc, logger)
 	sessionH := handler.NewSessionHandler()
 	auditH := handler.NewAuditHandler(auditRepo, logger)
 	wsH := handler.NewWsHandler(wsHub, logger)
@@ -133,6 +133,7 @@ func main() {
 			approvals.POST("/:id/reject", approvalH.Reject)
 			approvals.POST("/:id/defer", approvalH.Defer)
 			approvals.GET("/:id/events", approvalH.ListEvents)
+			approvals.GET("/:id/deployments", approvalH.ListDeployments)
 		}
 
 		sessions := v1.Group("/remote-sessions")
@@ -157,7 +158,7 @@ func main() {
 	agentRouter := gin.New()
 	agentRouter.Use(gin.Recovery())
 
-	agentH := handler.NewAgentHandler(edgeRepo, approvalRepo, deploymentRepo, natsSvc, logger)
+	agentH := handler.NewAgentHandler(edgeRepo, approvalRepo, deploymentRepo, releaseRepo, natsSvc, logger)
 	agentV1 := agentRouter.Group("/agent/v1")
 	{
 		agentV1.POST("/heartbeat", agentH.Heartbeat)

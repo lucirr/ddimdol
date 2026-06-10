@@ -44,18 +44,31 @@ func main() {
 	// -------------------------------------------------------------------------
 	// 3. NATS connection (outbound to central cluster)
 	// -------------------------------------------------------------------------
-	nc, err := nats.Connect(
-		cfg.NatsURL,
-		nats.Name("edge-agent:"+cfg.EdgeID),
-		nats.MaxReconnects(-1),              // reconnect forever
-		nats.ReconnectWait(5*time.Second),
+	natsOpts := []nats.Option{
+		nats.Name("edge-agent:" + cfg.EdgeID),
+		nats.MaxReconnects(-1), // reconnect forever
+		nats.ReconnectWait(5 * time.Second),
 		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
 			logger.Warn("NATS disconnected", zap.Error(err))
 		}),
 		nats.ReconnectHandler(func(nc *nats.Conn) {
 			logger.Info("NATS reconnected", zap.String("url", nc.ConnectedUrl()))
 		}),
-	)
+	}
+
+	// DMZ 터널링: credentials 파일 (NKey/JWT) 또는 TLS 인증서 중 하나를 사용
+	if cfg.NatsCredsFile != "" {
+		natsOpts = append(natsOpts, nats.UserCredentials(cfg.NatsCredsFile))
+		logger.Info("NATS credentials loaded", zap.String("file", cfg.NatsCredsFile))
+	} else if cfg.NatsTLSCAPath != "" {
+		natsOpts = append(natsOpts,
+			nats.RootCAs(cfg.NatsTLSCAPath),
+			nats.ClientCert(cfg.NatsTLSCertPath, cfg.NatsTLSKeyPath),
+		)
+		logger.Info("NATS mTLS enabled")
+	}
+
+	nc, err := nats.Connect(cfg.NatsURL, natsOpts...)
 	if err != nil {
 		logger.Fatal("NATS connect failed", zap.Error(err))
 	}

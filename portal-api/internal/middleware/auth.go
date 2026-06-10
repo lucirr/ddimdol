@@ -32,7 +32,7 @@ func Auth() gin.HandlerFunc {
 				}
 			})
 			c.Set("user_id", "dev-user")
-			c.Set("role", "central-operator")
+			c.Set("roles", []string{"central-operator"})
 			c.Next()
 			return
 		}
@@ -52,37 +52,94 @@ func Auth() gin.HandlerFunc {
 
 		// TODO: Validate JWT signature against Keycloak JWKS endpoint.
 		// Signature validation is currently pending — only claims are parsed here.
-		sub := parseJWTSub(token)
+		claims := parseJWTClaims(token)
+
+		sub, _ := claims["sub"].(string)
 		if sub == "" {
 			sub = "unknown"
 		}
 		c.Set("user_id", sub)
+
+		// Keycloak stores roles under realm_access.roles
+		roles := extractRealmRoles(claims)
+		c.Set("roles", roles)
+
+		// Custom claim: tenant_id (set in Keycloak via mapper)
+		if tid, ok := claims["tenant_id"].(string); ok && tid != "" {
+			c.Set("tenant_id", tid)
+		}
+
 		c.Next()
 	}
 }
 
-// parseJWTSub extracts the "sub" claim from a JWT without verifying its signature.
-// Returns empty string on any parse failure.
-func parseJWTSub(token string) string {
+// RequireRole returns a middleware that aborts with 403 if the caller does not have one of the allowed roles.
+func RequireRole(allowed ...string) gin.HandlerFunc {
+	allowedSet := make(map[string]struct{}, len(allowed))
+	for _, r := range allowed {
+		allowedSet[r] = struct{}{}
+	}
+	return func(c *gin.Context) {
+		roles, _ := c.Get("roles")
+		roleList, _ := roles.([]string)
+		for _, r := range roleList {
+			if _, ok := allowedSet[r]; ok {
+				c.Next()
+				return
+			}
+		}
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "forbidden: insufficient role"})
+	}
+}
+
+// HasRole reports whether the current request context carries the given role.
+func HasRole(c *gin.Context, role string) bool {
+	roles, _ := c.Get("roles")
+	roleList, _ := roles.([]string)
+	for _, r := range roleList {
+		if r == role {
+			return true
+		}
+	}
+	return false
+}
+
+// parseJWTClaims decodes the payload of a JWT without verifying its signature.
+// Returns nil on any parse failure.
+func parseJWTClaims(token string) map[string]any {
 	parts := strings.Split(token, ".")
 	if len(parts) < 3 {
-		return ""
+		return nil
 	}
-	// JWT is always header.payload.signature — payload is the second-to-last part
-	payload, err := base64.RawURLEncoding.DecodeString(parts[len(parts)-2])
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		// Try standard encoding as fallback
 		payload, err = base64.StdEncoding.DecodeString(parts[1])
 		if err != nil {
-			return ""
+			return nil
 		}
 	}
 	var claims map[string]any
 	if err := json.Unmarshal(payload, &claims); err != nil {
-		return ""
+		return nil
 	}
-	if sub, ok := claims["sub"].(string); ok {
-		return sub
+	return claims
+}
+
+// extractRealmRoles extracts Keycloak realm_access.roles from parsed JWT claims.
+func extractRealmRoles(claims map[string]any) []string {
+	if claims == nil {
+		return nil
 	}
-	return ""
+	realmAccess, _ := claims["realm_access"].(map[string]any)
+	if realmAccess == nil {
+		return nil
+	}
+	raw, _ := realmAccess["roles"].([]any)
+	roles := make([]string, 0, len(raw))
+	for _, r := range raw {
+		if s, ok := r.(string); ok {
+			roles = append(roles, s)
+		}
+	}
+	return roles
 }

@@ -1,7 +1,7 @@
 # Edge DIP — 엣지 배포 관리 플랫폼
 
 엣지 노드에 대한 소프트웨어 배포를 중앙에서 안전하게 관리하는 플랫폼입니다.  
-릴리스 승인, 배포 자동화, 원격 세션 제어, OPA 기반 정책 적용을 통합 제공합니다.
+릴리스 승인, 배포 자동화, 원격 세션 제어를 통합 제공합니다.
 
 ## 시스템 아키텍처
 
@@ -32,74 +32,156 @@
         |                                       |
         v                                       v
   +-----------+                          +-----------+
-  | 통합 포털  |  <-- Keycloak (OIDC) --> | OPA 정책  |
-  | React 18  |                          | (Rego)   |
-  +-----+-----+                          +-----------+
+  | 통합 포털  |  <-- Keycloak (OIDC) --> | Portal    |
+  | React 18  |  JWT role 기반 인가       | API       |
+  |           |  (realm_roles 클레임)     | Go/Gin    |
+  |     WS    | <======================== | :8080     |
+  | (실시간   |  WebSocket /ws/edges      |           |
+  |  edge 상태)|                          | Agent API |
+  +-----------+                          | :8081(mTLS|
+                                         +-----+-----+
+                                               |
+                                               | PostgreSQL 16
+                                               v
+                                         +-----------+
+                                         | PostgreSQL |
+                                         | 16         |
+                                         +-----------+
+
+  Portal API  ──publish──>  NATS JetStream (중앙 Cluster)
+  (릴리스 발행)              ├─ RELEASES 스트림
+                            │   releases.published.<id>
+  (승인 완료)                ├─ APPROVALS 스트림
+                            │   approvals.APPROVED.<id>
+                            │
+  Portal API  <──subscribe─ EDGE_EVENTS 스트림
+  (하트비트 수신)             │   edge.heartbeat.<edge-id>
+                            │        │
+                            │        └─> DB 업데이트 + WebSocket broadcast
+                            │
+                            │  ▲ NATS LeafNode 연결 (DMZ 환경)
+                            │  │  에지 NATS가 중앙 NATS에 outbound로 붙음
+                            │  │  NKey/JWT Credentials 또는 mTLS 인증
+                            │  │
+                       [DMZ Firewall]
+                            │
+========================================================================
+        에지 (Edge Plane, N개 사이트)   ※ 모든 통신은 에지→중앙 outbound만
+========================================================================
+                            │
+           ┌────────────────┘
+           │  NATS outbound 연결 (에지가 중앙 NATS LeafNode 허브에 접속)
+           │  일반 환경: nats://central:4222
+           │  DMZ 환경:  tls://central:4222 + NATS_CREDS / NATS_TLS_CA|CERT|KEY
+           │
+           │  subscribe: releases.published.>  ──────────────────┐
+           │  subscribe: approvals.APPROVED.>  ──────────────┐   │
+           v                                                 │   │
+  +-----------+    +-------------------+                     │   │
+  | Edge      |    | K3s/RKE2          |                     │   │
+  | Agent     |--->| + Update Operator |                     │   │
+  | (Go)      |    | (CatalogPackage   |                     │   │
+  |           |    |  CRD reconcile)   |  ①릴리스 알림 수신 ──┘   │
+  +-----+-----+    +--------+----------+  ②승인 완료 수신 ────────┘
+        |                   |
+        | HTTP outbound      | kubectl apply
+        | (에지→중앙)         | CatalogPackage
+        |                   v
+        |           +-----------+
+        |           | Local     |
+        |           | Harbor    |
+        |           | Mirror    |
+        |           | (image    |
+        |           |  pull)    |
+        |           +-----------+
         |
-        v
-  +-----------+    +-----------+
-  | Portal    |--->| PostgreSQL|
-  | API       |    | 16        |
-  | Go/Gin    |    +-----------+
-  +-----+-----+
-        |
-        | releases.published.>   (릴리스 노티)
-        | approvals.APPROVED.*   (승인 완료)
-        | edge.heartbeat.<id>    (하트비트 수신)
+        | POST /agent/v1/approval-requests  → 승인 요청 자동 생성
+        | POST /agent/v1/download-progress  → 다운로드 진행률 보고
+        | POST /agent/v1/deployment-result  → 배포 결과 보고
         v
   +-----------+
-  | NATS      |  <==== outbound only (에지 → 중앙) ====
-  | JetStream |
-  +-----+-----+
-        |
-========|================================================
-        |   에지 (Edge Plane, N개 사이트)
-========|================================================
-        |
-        v
-  +-----------+    +-------------------+
-  | Edge      |    | K3s/RKE2          |
-  | Agent     |--->| + Update Operator |
-  | (Go)      |    | (CatalogPackage   |
-  |           |    |  CRD reconcile)   |
-  +-----+-----+    +--------+----------+
-        |                   |
-        | 승인 요청 자동 생성  | kubectl apply
-        | POST /agent/v1/   | CatalogPackage
-        | approval-requests |
-        v                   v
-  +-----------+    +-----------+
-  | Central   |    | Local     |
-  | Portal API|    | Harbor    |
-  +-----------+    | Mirror    |
-                   | (image    |
-                   |  pull)    |
-                   +-----------+
+  | Central   |
+  | Portal API|
+  | :8081     |
+  | (mTLS)    |
+  +-----------+
 ```
 
-**핵심 통신 패턴**:
-- 에지는 항상 **outbound 클라이언트** — NATS subscribe, Harbor pull, HTTP POST
-- 중앙은 에지에 직접 inbound 접속 불가
-- NATS JetStream 스트림:
-  - `RELEASES` 스트림 → `releases.published.>` (릴리스 알림)
-  - `APPROVALS` 스트림 → `approvals.APPROVED.*` (승인 완료)
-  - `EDGE_EVENTS` 스트림 ← `edge.heartbeat.<edge-id>` (하트비트)
+**핵심 통신 원칙**:
+- 에지는 항상 **outbound 클라이언트** — 중앙이 에지에 직접 inbound 접속하는 경로 없음
+- NATS: 에지가 중앙 NATS 서버에 outbound 연결 후 subscribe (pull 방식)
+- HTTP: 에지가 중앙 Agent API(`:8081`, mTLS)에 outbound POST
+
+**NATS JetStream 스트림**:
+
+| 스트림 | Subject | 방향 | 용도 |
+|--------|---------|------|------|
+| `RELEASES` | `releases.published.<id>` | 중앙 → (에지 subscribe) | 릴리스 발행 알림 |
+| `APPROVALS` | `approvals.APPROVED.<id>` | 중앙 → (에지 subscribe) | 승인 완료 알림 |
+| `EDGE_EVENTS` | `edge.heartbeat.<edge-id>` | 에지 publish → 중앙 subscribe | 하트비트/메트릭 |
+
+**DMZ 터널링 (NATS LeafNode)**:
+
+에지가 방화벽 뒤(DMZ) 또는 격리망에 있는 경우 NATS LeafNode를 사용합니다.  
+- **인프라 구성**: 중앙 NATS 서버에서 LeafNode Hub 포트(기본 7422) 활성화  
+- **코드 지원**: edge-agent는 NATS_CREDS 또는 NATS_TLS_* 환경변수로 인증 방식 선택  
+- **스트림 투명성**: LeafNode 연결 후에도 동일한 Subject/Stream 이름 그대로 사용 (코드 변경 없음)
+
+| 환경변수 | 용도 |
+|----------|------|
+| `NATS_CREDS` | NKey/JWT credentials 파일 경로 (권장) |
+| `NATS_TLS_CA` | CA 인증서 경로 (직접 mTLS 시) |
+| `NATS_TLS_CERT` | 클라이언트 인증서 경로 |
+| `NATS_TLS_KEY` | 클라이언트 키 경로 |
 
 **승인 요청 생성 경로 (두 가지)**:
 1. **UI 수동 생성** — 관리자가 Portal Web에서 릴리스 + 에지 노드 선택 후 `POST /api/v1/approvals` 직접 호출
 2. **edge-agent 자동 생성** — `releases.published.>` 수신 시 `POST /agent/v1/approval-requests` 자동 호출
 
-**배포 흐름**: 릴리스 발행 → (UI 또는 agent가) 승인 요청 생성 → 관리자 승인 → `approvals.APPROVED.*` 이벤트 → edge-agent가 Harbor pull → `CatalogPackage` CRD apply → Update Operator reconcile
+**배포 흐름 (일반)**:
+```
+central-operator: 릴리스 발행 (is_urgent=false)
+  → NATS releases.published.<id>
+  → edge-agent 수신
+  → POST /agent/v1/approval-requests  ← 승인 요청 자동 생성 (PENDING)
+  → edge-admin: Portal UI에서 검토 후 POST /api/v1/approvals/:id/approve
+    ※ edge-admin은 자신의 테넌트(현장) 소속 에지만 승인 가능
+  → NATS approvals.APPROVED.<id>
+  → edge-agent 수신
+  → Local Harbor에서 image pull (docker/nerdctl)
+  → kubectl apply CatalogPackage CRD
+  → Update Operator reconcile:
+      Downloading → Applying (Helm install/upgrade)
+        → HealthCheck (pod readiness polling, timeout: 5m)
+          ┌─ 성공 → phase: Ready
+          └─ 실패 + autoRollback=true → Helm rollback → phase: RolledBack
+  → edge-agent CatalogWatcher (15초 간격 polling):
+      Ready      → POST /agent/v1/deployment-result (phase: COMPLETED)
+      Failed     → POST /agent/v1/deployment-result (phase: FAILED)
+      RolledBack → POST /agent/v1/deployment-result (phase: ROLLED_BACK)
+```
+
+**배포 흐름 (긴급 패치, is_urgent=true)**:
+```
+central-operator: 릴리스 발행 (is_urgent=true)
+  → NATS releases.published.<id>
+  → edge-agent 수신
+  → POST /agent/v1/approval-requests
+    → portal-api: is_urgent 확인 → 즉시 APPROVED 처리 + NATS approvals.APPROVED.<id> 발행
+  → edge-agent 수신 (edge-admin 개입 없음)
+  → Local Harbor에서 image pull → kubectl apply CatalogPackage CRD
+  → Update Operator reconcile (동일: HealthCheck + AutoRollback 포함)
+  → CatalogWatcher → POST /agent/v1/deployment-result
+```
 
 ## 컴포넌트
 
 | 디렉토리 | 언어/프레임워크 | 역할 |
 |---|---|---|
-| `portal-api/` | Go 1.22, Gin, sqlx | 중앙 제어 REST API 서버 |
+| `portal-api/` | Go 1.22, Gin, sqlx | 중앙 제어 REST API 서버 (`:8080`) + Agent API (`:8081`, mTLS) |
 | `portal-web/` | React 18, TypeScript, Vite | 관리자 웹 포털 |
 | `edge-agent/` | Go 1.22, NATS JetStream | 엣지 노드 에이전트 |
 | `update-operator/` | Go 1.22 | K8s 기반 배포 오퍼레이터 |
-| `policies/` | OPA Rego | 승인·세션 정책 |
 | `deploy/local/` | Docker Compose | 로컬 개발 인프라 |
 
 ## 핵심 기능
@@ -109,41 +191,64 @@
 각 릴리스는 아티팩트 다이제스트, SBOM URI, CVE 리포트, 서명 정보를 포함합니다.
 
 - **등록**: Portal UI에서 패키지명/버전/이미지 정보 입력 → `DRAFT` 상태로 생성
-- **발행**: `SCANNED` 또는 `SIGNED` 상태의 릴리스에 한해 UI에서 발행 버튼 클릭 → `PUBLISHED` 전환 (Critical CVE가 있으면 발행 거부)
+  - `is_urgent=true` 설정 시 에지 관리자 승인 없이 자동 배포 (긴급 패치)
+- **발행**: `SCANNED` 또는 `SIGNED` 상태의 릴리스에 한해 발행 가능 (Critical CVE가 있으면 발행 거부)
 - **NATS 이벤트**: 발행 시 `releases.published.<id>` 이벤트 발행 → edge-agent가 수신하여 승인 요청 자동 생성
 
 ### 승인 워크플로
 엣지 노드별 배포 승인 요청을 생성하고 `PENDING → APPROVED → APPLIED` 흐름으로 처리합니다.  
-OPA 정책(`policies/approval.rego`, `policies/release.rego`)으로 승인 규칙을 코드로 관리합니다.
+승인 규칙(역할 체크, CVE gate)은 Portal API 핸들러 코드에서 직접 처리합니다.
+
+승인 상태: `PENDING | APPROVED | REJECTED | DEFERRED | APPLIED | ROLLED_BACK | EXPIRED`
 
 ### 원격 세션
 중앙 운영자가 엣지 노드에 원격으로 접속할 수 있는 세션을 최대 30분 TTL로 제어합니다.  
 세션 생성 시 사유(reason)가 필수이며, `auditor` 역할은 세션 녹화 기록만 조회 가능합니다.
 
 ### 엣지 에이전트
-각 엣지 노드에서 실행되는 경량 Go 데몬으로, NATS JetStream을 통해 중앙과 통신합니다.
-- 주기적 하트비트 전송 (기본 10초)
-- 메트릭 수집 및 보고
-- 배포 명령 수신 및 자동 업데이트
+각 엣지 노드에서 실행되는 경량 Go 데몬으로, NATS JetStream과 HTTP를 통해 중앙과 통신합니다.
+- NATS subscribe: 릴리스 알림 및 승인 완료 이벤트 수신
+- NATS publish: 주기적 하트비트 전송 (기본 10초)
+- HTTP POST: 승인 요청 생성, 배포 진행률/결과 보고
+
+### 인증 및 인가
+- **인증**: Keycloak 24 OIDC — JWT Bearer 토큰
+- **인가**: JWT `realm_access.roles` 클레임 기반 역할 체크 (Portal API 미들웨어 + 핸들러에서 처리)
+  - `central-operator`: 릴리스 생성/발행, 원격 세션 생성 (승인은 불가 — 이중 안전장치)
+  - `edge-admin`: **자신의 테넌트(현장)에 속한 에지의 최종 승인/거부만 가능**
+  - `auditor`: 읽기 전용, 세션 녹화 조회
+  - Keycloak JWT 커스텀 클레임: `tenant_id` (edge_nodes.tenant_id와 매핑)
+
+### 실시간 에지 상태
+Portal Web은 WebSocket(`/api/v1/ws/edges`)으로 에지 노드 상태를 실시간 수신합니다.  
+edge-agent 하트비트 → NATS → Portal API → WebSocket broadcast → 브라우저 순으로 전달됩니다.
 
 ## 데이터 모델
 
 ```
-edge_nodes        릴리스 정보        승인 요청
-  id (UUID)         id (UUID)         id (UUID)
-  name              package_name      release_id → releases
-  region            version           edge_id → edge_nodes
-  tenant_id         artifact_digest   status (PENDING/APPROVED/...)
-  status            status (DRAFT/…)  requested_by / decision_by
-  last_heartbeat_at signed_by
+edge_nodes                  releases                    approval_requests
+  id (UUID)                   id (UUID)                   id (UUID)
+  name                        package_name                release_id → releases
+  region                      version                     edge_id → edge_nodes
+  tenant_id                   artifact_digest             status
+  status (UP/DOWN/DEGRADED)   image_ref                     PENDING/APPROVED/REJECTED
+  last_heartbeat_at           sbom_uri                      DEFERRED/APPLIED
+  agent_version               cve_report (JSONB)            ROLLED_BACK/EXPIRED
+  k8s_version                 signature / signed_by       requested_by / decision_by
+  capabilities (JSONB)        status                      idempotency_key
+  labels (JSONB)                DRAFT/SCANNED/SIGNED      version (optimistic lock)
+                                PUBLISHED/DEPRECATED      scheduled_at / deferred_until
 
-remote_sessions
-  id (UUID)
-  edge_id → edge_nodes
-  operator_id
-  reason (필수)
-  ttl_seconds (최대 1800)
-  status (PENDING_APPROVAL/ACTIVE/EXPIRED/TERMINATED)
+deployment_records          remote_sessions
+  id (UUID)                   id (UUID)
+  approval_id                 edge_id → edge_nodes
+  edge_id / release_id        operator_id
+  phase                       reason (필수)
+    DOWNLOADING/APPLYING      ttl_seconds (최대 1800)
+    HEALTHCHECK/COMPLETED     status
+    FAILED/ROLLED_BACK          PENDING_APPROVAL/ACTIVE
+  progress_pct (0-100)          EXPIRED/TERMINATED
+  error_code / error_message
 ```
 
 ## 기술 스택
@@ -151,8 +256,7 @@ remote_sessions
 - **백엔드**: Go 1.22, Gin, sqlx, NATS JetStream, Viper, Zap
 - **프론트엔드**: React 18, TypeScript, Vite, Tailwind CSS, TanStack Query, Axios
 - **DB**: PostgreSQL 16
-- **인증**: Keycloak 24 (OIDC)
-- **정책 엔진**: OPA (Open Policy Agent) Rego
+- **인증/인가**: Keycloak 24 (OIDC), JWT realm_roles 기반 역할 체크
 - **배포**: ArgoCD (ApplicationSet), Docker Compose (로컬)
 
 ## 로컬 개발 환경
@@ -184,7 +288,8 @@ docker compose up -d
 ```bash
 cd portal-api
 make run
-# → http://localhost:8080
+# → http://localhost:8080  (Public API, JWT 인증)
+# → http://localhost:8081  (Agent API, mTLS)
 ```
 
 ### Portal Web 실행
@@ -216,18 +321,42 @@ make run
 | `EDGE_ID` | (필수) | 엣지 노드 UUID |
 | `EDGE_NAME` | (필수) | 엣지 노드 이름 |
 | `EDGE_REGION` | `default` | 리전 |
-| `NATS_URL` | `nats://localhost:4222` | NATS 서버 주소 |
-| `CENTRAL_API_URL` | `http://localhost:8080` | 중앙 API 주소 |
+| `NATS_URL` | `nats://localhost:4222` | NATS 서버 주소 (DMZ: `tls://...`) |
+| `NATS_CREDS` | — | NKey/JWT credentials 파일 (DMZ LeafNode 인증, 권장) |
+| `NATS_TLS_CA` | — | NATS TLS CA 인증서 경로 (직접 mTLS 시) |
+| `NATS_TLS_CERT` | — | NATS TLS 클라이언트 인증서 경로 |
+| `NATS_TLS_KEY` | — | NATS TLS 클라이언트 키 경로 |
+| `CENTRAL_API_URL` | `http://localhost:8081` | 중앙 Agent API 주소 |
 | `HARBOR_URL` | `https://harbor.local` | Harbor 레지스트리 주소 |
 | `HEARTBEAT_INTERVAL` | `10s` | 하트비트 전송 주기 |
 
-## 정책 (OPA)
+## API 엔드포인트
 
-`policies/` 디렉토리에 Rego 파일로 정책을 정의합니다.
+### Public API (`:8080`, JWT 인증 필요)
 
-- `session.rego` — `central-operator`만 세션 생성/활성화/종료 가능, TTL 최대 1800초
-- `approval.rego` — 배포 승인 규칙
-- `release.rego` — 릴리스 게시 규칙
+| Method | Path | 설명 |
+|--------|------|------|
+| GET | `/health` | 헬스 체크 |
+| POST/GET | `/api/v1/edges` | 에지 노드 등록/목록 |
+| GET | `/api/v1/edges/:id` | 에지 노드 상세 |
+| POST | `/api/v1/releases` | 릴리스 등록 |
+| GET | `/api/v1/releases` | 릴리스 목록 |
+| PATCH | `/api/v1/releases/:id/cve-report` | CVE 리포트 업데이트 |
+| POST | `/api/v1/releases/:id/publish` | 릴리스 발행 |
+| POST/GET | `/api/v1/approvals` | 승인 요청 생성/목록 |
+| POST | `/api/v1/approvals/:id/approve` | 승인 |
+| POST | `/api/v1/approvals/:id/reject` | 거절 |
+| POST | `/api/v1/approvals/:id/defer` | 연기 |
+| GET | `/api/v1/approvals/:id/deployments` | 배포 진행 기록 조회 (폴링용) |
+| GET | `/api/v1/ws/edges` | WebSocket — 실시간 에지 이벤트 |
+
+### Agent API (`:8081`, mTLS)
+
+| Method | Path | 설명 |
+|--------|------|------|
+| POST | `/agent/v1/approval-requests` | 승인 요청 자동 생성 |
+| POST | `/agent/v1/download-progress` | 다운로드 진행률 보고 |
+| POST | `/agent/v1/deployment-result` | 배포 결과 보고 |
 
 ## 데이터베이스 마이그레이션
 
@@ -246,19 +375,24 @@ didimdol/
 │   ├── cmd/agent/       # 진입점
 │   └── internal/
 │       ├── config/      # 환경변수 설정
-│       ├── heartbeat/   # 하트비트 송신
-│       ├── reporter/    # 메트릭 보고
+│       ├── heartbeat/   # 하트비트 송신 (NATS publish)
+│       ├── reporter/    # 배포 결과 보고 (HTTP POST)
 │       ├── collector/   # 메트릭 수집
-│       └── updater/     # 배포 업데이트 처리
+│       └── updater/     # 릴리스/승인 이벤트 수신 및 배포 처리
 ├── portal-api/          # 중앙 제어 API (Go)
 │   ├── internal/
-│   │   └── middleware/  # 감사 로그 등
+│   │   ├── handler/     # HTTP 핸들러 (edge, release, approval, session, agent, ws)
+│   │   ├── service/     # NATS, Harbor 서비스
+│   │   ├── repository/  # PostgreSQL 리포지토리
+│   │   ├── domain/      # 도메인 모델
+│   │   ├── middleware/  # 인증(JWT), 감사 로그
+│   │   └── hub/         # WebSocket 브로드캐스트 허브
 │   └── migrations/      # SQL 마이그레이션
 ├── portal-web/          # 관리자 웹 (React)
 │   └── src/
 ├── update-operator/     # K8s 배포 오퍼레이터 (Go)
-├── policies/            # OPA Rego 정책
-└── deploy/
-    ├── local/           # Docker Compose 로컬 환경
-    └── argocd/          # ArgoCD 배포 매니페스트
+├── deploy/
+│   ├── local/           # Docker Compose 로컬 환경
+│   └── argocd/          # ArgoCD 배포 매니페스트
+└── pipelines/           # Gitea Actions CI 파이프라인
 ```

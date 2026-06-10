@@ -44,9 +44,10 @@ func main() {
 	}
 
 	if err = (&controller.CatalogPackageReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Logger: logger,
+		Client:  mgr.GetClient(),
+		Scheme:  mgr.GetScheme(),
+		Logger:  logger,
+		RestCfg: mgr.GetConfig(),
 	}).SetupWithManager(mgr); err != nil {
 		logger.Fatal("unable to create CatalogPackage controller", zap.Error(err))
 		os.Exit(1)

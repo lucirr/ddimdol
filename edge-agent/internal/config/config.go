@@ -13,6 +13,10 @@ type Config struct {
 	EdgeName          string
 	EdgeRegion        string
 	NatsURL           string
+	NatsCredsFile     string // NATS_CREDS — NKey/JWT credentials file for DMZ auth
+	NatsTLSCAPath     string // NATS_TLS_CA — CA cert for NATS TLS (DMZ tunnel)
+	NatsTLSCertPath   string // NATS_TLS_CERT — client cert for NATS mTLS
+	NatsTLSKeyPath    string // NATS_TLS_KEY — client key for NATS mTLS
 	CentralAPIURL     string
 	HarborURL         string
 	HeartbeatInterval time.Duration
@@ -53,6 +57,10 @@ func Load() (*Config, error) {
 		EdgeName:          edgeName,
 		EdgeRegion:        v.GetString("EDGE_REGION"),
 		NatsURL:           v.GetString("NATS_URL"),
+		NatsCredsFile:     v.GetString("NATS_CREDS"),
+		NatsTLSCAPath:     v.GetString("NATS_TLS_CA"),
+		NatsTLSCertPath:   v.GetString("NATS_TLS_CERT"),
+		NatsTLSKeyPath:    v.GetString("NATS_TLS_KEY"),
 		CentralAPIURL:     v.GetString("CENTRAL_API_URL"),
 		HarborURL:         v.GetString("HARBOR_URL"),
 		HeartbeatInterval: interval,

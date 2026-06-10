@@ -12,6 +12,18 @@ type CatalogPackageSpec struct {
 	ApprovalID string `json:"approvalId"`
 	// HarborURL은 로컬 Harbor 미러 주소
 	HarborURL string `json:"harborUrl"`
+	// ImageRef는 Harbor의 전체 이미지 레퍼런스 (harbor/repo/name:tag 또는 @digest)
+	ImageRef string `json:"imageRef"`
+	// HelmReleaseName은 Helm 릴리스 이름 (기본값: packageName)
+	HelmReleaseName string `json:"helmReleaseName,omitempty"`
+	// Namespace는 Helm 릴리스가 배포될 K8s 네임스페이스 (기본값: default)
+	Namespace string `json:"namespace,omitempty"`
+	// ChartPath는 로컬 Helm 차트 경로 (Harbor OCI 차트 또는 로컬 경로)
+	ChartPath string `json:"chartPath,omitempty"`
+	// Values는 Helm values override (JSON 형식)
+	Values string `json:"values,omitempty"`
+	// HealthCheckTimeout은 헬스체크 대기 시간 (기본값: 5m)
+	HealthCheckTimeout string `json:"healthCheckTimeout,omitempty"`
 	// AutoRollback이 true면 헬스체크 실패 시 자동 롤백
 	AutoRollback bool `json:"autoRollback,omitempty"`
 }
@@ -31,6 +43,8 @@ const (
 type CatalogPackageStatus struct {
 	Phase            PackagePhase `json:"phase,omitempty"`
 	InstalledVersion string       `json:"installedVersion,omitempty"`
+	PreviousVersion  string       `json:"previousVersion,omitempty"`
+	HelmRevision     int          `json:"helmRevision,omitempty"`
 	LastAppliedAt    *metav1.Time `json:"lastAppliedAt,omitempty"`
 	Message          string       `json:"message,omitempty"`
 }

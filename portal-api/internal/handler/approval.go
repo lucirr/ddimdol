@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,28 +15,31 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/didimdol/portal-api/internal/domain"
+	"github.com/didimdol/portal-api/internal/middleware"
 	"github.com/didimdol/portal-api/internal/repository"
 	"github.com/didimdol/portal-api/internal/service"
 )
 
 type ApprovalHandler struct {
-	repo     repository.ApprovalRepository
-	rel      repository.ReleaseRepository
-	edgeRepo repository.EdgeRepository
-	nats     *service.NatsService
-	harbor   *service.HarborService
-	logger   *zap.Logger
+	repo           repository.ApprovalRepository
+	rel            repository.ReleaseRepository
+	edgeRepo       repository.EdgeRepository
+	deploymentRepo repository.DeploymentRepository
+	nats           *service.NatsService
+	harbor         *service.HarborService
+	logger         *zap.Logger
 }
 
 func NewApprovalHandler(
 	repo repository.ApprovalRepository,
 	rel repository.ReleaseRepository,
 	edgeRepo repository.EdgeRepository,
+	deploymentRepo repository.DeploymentRepository,
 	nats *service.NatsService,
 	harbor *service.HarborService,
 	logger *zap.Logger,
 ) *ApprovalHandler {
-	return &ApprovalHandler{repo: repo, rel: rel, edgeRepo: edgeRepo, nats: nats, harbor: harbor, logger: logger}
+	return &ApprovalHandler{repo: repo, rel: rel, edgeRepo: edgeRepo, deploymentRepo: deploymentRepo, nats: nats, harbor: harbor, logger: logger}
 }
 
 func (h *ApprovalHandler) CreateApproval(c *gin.Context) {
@@ -173,6 +177,17 @@ func (h *ApprovalHandler) Approve(c *gin.Context) {
 		return
 	}
 
+	// edge-admin은 자신의 테넌트에 속한 에지의 승인만 가능
+	if middleware.HasRole(c, "edge-admin") {
+		if err := h.checkEdgeTenantAccess(c, approval.EdgeID); err != nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+			return
+		}
+	} else if !middleware.HasRole(c, "central-operator") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden: edge-admin or central-operator role required"})
+		return
+	}
+
 	if h.rel != nil {
 		release, err := h.rel.FindByID(c.Request.Context(), approval.ReleaseID)
 		if err != nil {
@@ -272,6 +287,16 @@ func (h *ApprovalHandler) Reject(c *gin.Context) {
 		return
 	}
 
+	if middleware.HasRole(c, "edge-admin") {
+		if err := h.checkEdgeTenantAccess(c, approval.EdgeID); err != nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+			return
+		}
+	} else if !middleware.HasRole(c, "central-operator") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden: edge-admin or central-operator role required"})
+		return
+	}
+
 	approval.DecisionReason = req.Reason
 	if err := h.repo.UpdateStatus(c.Request.Context(), id, domain.ApprovalStatusRejected, req.Reason, approval.Version); err != nil {
 		if strings.Contains(err.Error(), "version conflict") {
@@ -292,4 +317,38 @@ func (h *ApprovalHandler) Defer(c *gin.Context) {
 
 func (h *ApprovalHandler) ListEvents(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": []any{}})
+}
+
+// checkEdgeTenantAccess verifies that the caller's tenant_id matches the edge's tenant_id.
+func (h *ApprovalHandler) checkEdgeTenantAccess(c *gin.Context, edgeID uuid.UUID) error {
+	callerTenant, _ := c.Get("tenant_id")
+	callerTenantStr, _ := callerTenant.(string)
+	if callerTenantStr == "" {
+		return fmt.Errorf("forbidden: tenant_id not present in token")
+	}
+	edge, err := h.edgeRepo.FindByID(c.Request.Context(), edgeID)
+	if err != nil {
+		return fmt.Errorf("forbidden: edge not found")
+	}
+	if edge.TenantID.String() != callerTenantStr {
+		return fmt.Errorf("forbidden: edge does not belong to your tenant")
+	}
+	return nil
+}
+
+func (h *ApprovalHandler) ListDeployments(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+
+	records, err := h.deploymentRepo.FindByApprovalID(c.Request.Context(), id)
+	if err != nil {
+		h.logger.Error("list deployments", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": records})
 }

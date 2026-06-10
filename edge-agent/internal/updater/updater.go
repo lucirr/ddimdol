@@ -47,13 +47,14 @@ type approvalResponse struct {
 // Updater listens for release notifications, requests approval, then pulls
 // and deploys images from the local Harbor mirror when approved.
 type Updater struct {
-	edgeID     string
-	js         jetstream.JetStream
-	centralURL string
-	harborURL  string
-	reporter   *reporter.Reporter
-	client     *http.Client
-	logger     *zap.Logger
+	edgeID         string
+	js             jetstream.JetStream
+	centralURL     string
+	harborURL      string
+	reporter       *reporter.Reporter
+	catalogWatcher *CatalogWatcher
+	client         *http.Client
+	logger         *zap.Logger
 }
 
 // New creates an Updater.
@@ -65,13 +66,14 @@ func New(
 	logger *zap.Logger,
 ) *Updater {
 	return &Updater{
-		edgeID:     edgeID,
-		js:         js,
-		centralURL: centralURL,
-		harborURL:  harborURL,
-		reporter:   rep,
-		client:     &http.Client{Timeout: 30 * time.Second},
-		logger:     logger,
+		edgeID:         edgeID,
+		js:             js,
+		centralURL:     centralURL,
+		harborURL:      harborURL,
+		reporter:       rep,
+		catalogWatcher: newCatalogWatcher(rep, "edgedip", logger),
+		client:         &http.Client{Timeout: 30 * time.Second},
+		logger:         logger,
 	}
 }
 
@@ -207,8 +209,13 @@ func (u *Updater) consumeApprovals(ctx context.Context, msgs jetstream.MessagesC
 			continue
 		}
 
+		resourceName := sanitizeName(event.ReleaseID)
 		if catalogErr := u.applyToCatalog(ctx, event); catalogErr != nil {
 			u.logger.Warn("apply to catalog failed (non-fatal)", zap.Error(catalogErr))
+			// Fall through to report COMPLETED from deploy() — catalog is best-effort.
+		} else {
+			// CatalogWatcher will report Ready/Failed/RolledBack when Operator finishes.
+			u.catalogWatcher.Watch(ctx, resourceName, event.ApprovalID)
 		}
 
 		_ = u.reporter.Report(ctx, reporter.DeploymentResult{
@@ -285,8 +292,11 @@ spec:
   approvedVersion: "%s"
   approvalId: "%s"
   harborUrl: "%s"
+  imageRef: "%s"
+  namespace: edgedip
   autoRollback: true
-`, sanitizeName(event.ReleaseID), extractAppName(event.ImageRef), extractVersion(event.ImageRef), event.ApprovalID, u.harborURL)
+  healthCheckTimeout: "5m"
+`, sanitizeName(event.ReleaseID), extractAppName(event.ImageRef), extractVersion(event.ImageRef), event.ApprovalID, u.harborURL, event.ImageRef)
 
 	cmd := exec.CommandContext(ctx, "kubectl", "apply", "-f", "-")
 	cmd.Stdin = strings.NewReader(yaml)

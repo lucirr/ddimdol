@@ -26,6 +26,7 @@ type Release struct {
 	CveReport      map[string]any `json:"cve_report" db:"cve_report"`
 	Signature      string         `json:"signature" db:"signature"`
 	SignedBy       string         `json:"signed_by" db:"signed_by"`
+	IsUrgent       bool           `json:"is_urgent" db:"is_urgent"`
 	Status         ReleaseStatus  `json:"status" db:"status"`
 	PublishedAt    *time.Time     `json:"published_at" db:"published_at"`
 	CreatedAt      time.Time      `json:"created_at" db:"created_at"`
