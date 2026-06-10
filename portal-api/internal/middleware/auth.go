@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -25,13 +26,20 @@ func init() {
 	authLogger, _ = zap.NewProduction()
 }
 
-// initVerifier lazily creates the OIDC token verifier from KEYCLOAK_ISSUER env var.
-// Expected format: https://keycloak.host/realms/<realm>
+// initVerifier lazily creates the OIDC token verifier.
+// Required env vars:
+//   KEYCLOAK_ISSUER   — https://keycloak.host/realms/<realm>
+//   KEYCLOAK_AUDIENCE — client ID that portal-api expects in the "aud" claim
 func initVerifier() (*oidc.IDTokenVerifier, error) {
 	verifierOnce.Do(func() {
 		issuer := os.Getenv("KEYCLOAK_ISSUER")
 		if issuer == "" {
-			verifierErr = nil // verifier stays nil — caller must handle
+			verifierErr = fmt.Errorf("KEYCLOAK_ISSUER is not set")
+			return
+		}
+		audience := os.Getenv("KEYCLOAK_AUDIENCE")
+		if audience == "" {
+			verifierErr = fmt.Errorf("KEYCLOAK_AUDIENCE is not set")
 			return
 		}
 		provider, err := oidc.NewProvider(context.Background(), issuer)
@@ -39,12 +47,7 @@ func initVerifier() (*oidc.IDTokenVerifier, error) {
 			verifierErr = err
 			return
 		}
-		cfg := &oidc.Config{
-			// portal-api is not an OAuth2 resource server with a fixed audience;
-			// audience check is skipped here and enforced by Keycloak client scopes.
-			SkipClientIDCheck: true,
-		}
-		verifier = provider.Verifier(cfg)
+		verifier = provider.Verifier(&oidc.Config{ClientID: audience})
 	})
 	return verifier, verifierErr
 }
@@ -117,13 +120,20 @@ func Auth() gin.HandlerFunc {
 // AgentMTLSIdentity extracts the edge ID from the mTLS client certificate CN
 // and stores it in the gin context as "mtls_edge_id". Call this middleware on
 // the Agent API router (port :8081) where mTLS is required.
+//
+// DEV_MODE bypass is allowed only when AGENT_TLS_ENABLED is not "true".
+// When TLS is enabled in production, the bypass is blocked regardless of DEV_MODE.
 func AgentMTLSIdentity() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if os.Getenv("DEV_MODE") == "true" {
-			// In dev mode the edge ID is taken from the X-Edge-ID header.
-			if eid := c.GetHeader("X-Edge-ID"); eid != "" {
-				c.Set("mtls_edge_id", eid)
+		tlsEnabled := os.Getenv("AGENT_TLS_ENABLED") == "true"
+
+		if os.Getenv("DEV_MODE") == "true" && !tlsEnabled {
+			eid := c.GetHeader("X-Edge-ID")
+			if eid == "" {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "X-Edge-ID header required in DEV_MODE"})
+				return
 			}
+			c.Set("mtls_edge_id", eid)
 			c.Next()
 			return
 		}
