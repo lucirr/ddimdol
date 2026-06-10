@@ -200,6 +200,30 @@ jobs:
             https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 \
             -o /usr/local/bin/cosign && chmod +x /usr/local/bin/cosign
 
+      - name: Fetch and verify release.image_ref from portal-api
+        # Fetch the canonical image_ref stored in portal-api for this release
+        # and confirm it matches the workflow input before signing anything.
+        # This prevents cross-approval: signing image A to mark release B as SIGNED.
+        id: fetch_release
+        run: |
+          RELEASE_JSON=$(curl -fsSL \
+            "${PORTAL_API_URL}/api/v1/releases/${RELEASE_ID}" \
+            -H "Authorization: Bearer ${PORTAL_API_TOKEN}")
+
+          DB_IMAGE_REF=$(echo "$RELEASE_JSON" | jq -r '.data.image_ref // empty')
+
+          if [ -z "$DB_IMAGE_REF" ]; then
+            echo "::error::Release ${RELEASE_ID} has no image_ref in portal-api"
+            exit 1
+          fi
+
+          if [ "$DB_IMAGE_REF" != "$IMAGE_REF" ]; then
+            echo "::error::image_ref mismatch — workflow input: '${IMAGE_REF}', portal-api DB: '${DB_IMAGE_REF}'"
+            exit 1
+          fi
+
+          echo "image_ref_verified=${DB_IMAGE_REF}" >> "$GITHUB_OUTPUT"
+
       - name: Write Cosign key
         run: |
           echo "$COSIGN_KEY" > cosign.key
@@ -234,7 +258,9 @@ jobs:
       - name: Update portal-api sign status (SIGNED)
         run: |
           SIG="${{ steps.cosign.outputs.signature }}"
-          PAYLOAD=$(jq -nc --arg sig "$SIG" '{signature: $sig}')
+          # Include image_ref so portal-api can re-confirm it matches the DB value.
+          PAYLOAD=$(jq -nc --arg sig "$SIG" --arg img "$IMAGE_REF" \
+            '{signature: $sig, image_ref: $img}')
 
           curl -fsSL -X PATCH \
             "${PORTAL_API_URL}/api/v1/releases/${RELEASE_ID}/sign" \

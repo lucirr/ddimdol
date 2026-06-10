@@ -187,10 +187,13 @@ func (h *ReleaseHandler) SignRelease(c *gin.Context) {
 		return
 	}
 
-	// Signature field is informational (e.g. cosign digest ref); signed_by is
-	// derived from the authenticated JWT subject, not trusted from request body.
+	// Signature is the cosign digest reference set by Actions.
+	// ImageRef must match the value stored in the DB — Actions echoes back
+	// what portal-api returned so the server can confirm the two inputs are
+	// for the same resource and no cross-approval occurred.
 	var req struct {
 		Signature string `json:"signature" binding:"required"`
+		ImageRef  string `json:"image_ref" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -205,6 +208,16 @@ func (h *ReleaseHandler) SignRelease(c *gin.Context) {
 
 	if release.Status != domain.ReleaseStatusScanned {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "release must be SCANNED before signing"})
+		return
+	}
+
+	// Confirm the image_ref from Actions matches what is stored for this release.
+	// Prevents cross-approval: signing a different (valid) image to flip this release's status.
+	if req.ImageRef != release.ImageRef {
+		h.logger.Warn("image_ref mismatch in sign request",
+			zap.String("request", req.ImageRef),
+			zap.String("stored", release.ImageRef))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "image_ref does not match release record"})
 		return
 	}
 
