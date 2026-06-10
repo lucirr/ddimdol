@@ -123,6 +123,7 @@ func main() {
 			releases.GET("", releaseH.ListReleases)
 			releases.GET("/:id", releaseH.GetRelease)
 			releases.PATCH("/:id/cve-report", releaseH.UpdateCveReport)
+			releases.PATCH("/:id/sign", releaseH.SignRelease)
 			releases.POST("/:id/publish", releaseH.PublishRelease)
 		}
 

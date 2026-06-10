@@ -1,0 +1,207 @@
+name: Security Scan
+
+# 관리자가 Harbor에 외부 이미지를 push한 후 수동으로 실행합니다.
+# Gitea UI: Actions 탭 → "Security Scan" → Run workflow
+on:
+  workflow_dispatch:
+    inputs:
+      release_id:
+        description: "Portal API Release UUID"
+        required: true
+        type: string
+      image_ref:
+        description: "Harbor image reference (e.g. harbor.local/vendor/app:v1.2.3)"
+        required: true
+        type: string
+
+env:
+  PORTAL_API_URL: ${{ vars.PORTAL_API_URL }}       # e.g. https://portal-api.internal:8080
+  PORTAL_API_TOKEN: ${{ secrets.PORTAL_API_TOKEN }} # central-operator JWT or service account token
+  HARBOR_URL: ${{ vars.HARBOR_URL }}               # e.g. harbor.local
+  HARBOR_USER: ${{ secrets.HARBOR_USER }}
+  HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+  COSIGN_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}    # cosign private key (PEM)
+  COSIGN_KEY_PASSWORD: ${{ secrets.COSIGN_KEY_PASSWORD }}
+
+jobs:
+  # ──────────────────────────────────────────────
+  # Job 1: SBOM 생성 (Syft)
+  # ──────────────────────────────────────────────
+  sbom:
+    name: Generate SBOM
+    runs-on: ubuntu-latest
+    outputs:
+      sbom_uri: ${{ steps.attach.outputs.sbom_uri }}
+    steps:
+      - name: Log in to Harbor
+        run: echo "$HARBOR_PASSWORD" | docker login "$HARBOR_URL" -u "$HARBOR_USER" --password-stdin
+
+      - name: Install Syft
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+            | sh -s -- -b /usr/local/bin
+
+      - name: Generate SBOM (SPDX JSON)
+        run: |
+          syft "${{ github.event.inputs.image_ref }}" \
+            -o spdx-json=sbom.spdx.json
+
+      - name: Attach SBOM to Harbor (OCI referrer)
+        id: attach
+        run: |
+          # Harbor 2.x 이상은 OCI referrer API를 지원합니다.
+          # oras CLI로 SBOM을 이미지 referrer로 attach합니다.
+          curl -sSfL https://github.com/oras-project/oras/releases/download/v1.1.0/oras_1.1.0_linux_amd64.tar.gz \
+            | tar -xz -C /usr/local/bin oras
+
+          SBOM_URI="${{ github.event.inputs.image_ref }}-sbom"
+          oras attach \
+            --artifact-type application/spdx+json \
+            "${{ github.event.inputs.image_ref }}" \
+            sbom.spdx.json:application/spdx+json
+
+          echo "sbom_uri=${SBOM_URI}" >> "$GITHUB_OUTPUT"
+
+  # ──────────────────────────────────────────────
+  # Job 2: CVE 스캔 (Trivy)
+  # ──────────────────────────────────────────────
+  cve-scan:
+    name: CVE Scan
+    runs-on: ubuntu-latest
+    needs: sbom
+    outputs:
+      critical: ${{ steps.parse.outputs.critical }}
+      high: ${{ steps.parse.outputs.high }}
+      medium: ${{ steps.parse.outputs.medium }}
+      low: ${{ steps.parse.outputs.low }}
+    steps:
+      - name: Log in to Harbor
+        run: echo "$HARBOR_PASSWORD" | docker login "$HARBOR_URL" -u "$HARBOR_USER" --password-stdin
+
+      - name: Install Trivy
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin
+
+      - name: Run Trivy scan
+        run: |
+          trivy image \
+            --format json \
+            --output trivy-report.json \
+            --severity CRITICAL,HIGH,MEDIUM,LOW \
+            "${{ github.event.inputs.image_ref }}"
+
+      - name: Parse severity counts
+        id: parse
+        run: |
+          python3 - <<'EOF'
+          import json, os
+
+          with open("trivy-report.json") as f:
+              report = json.load(f)
+
+          counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+          for result in report.get("Results", []):
+              for vuln in result.get("Vulnerabilities") or []:
+                  sev = vuln.get("Severity", "").upper()
+                  if sev in counts:
+                      counts[sev] += 1
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"critical={counts['CRITICAL']}\n")
+              f.write(f"high={counts['HIGH']}\n")
+              f.write(f"medium={counts['MEDIUM']}\n")
+              f.write(f"low={counts['LOW']}\n")
+
+          print(f"CRITICAL={counts['CRITICAL']} HIGH={counts['HIGH']} MEDIUM={counts['MEDIUM']} LOW={counts['LOW']}")
+          EOF
+
+      - name: Upload Trivy report artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: trivy-report
+          path: trivy-report.json
+
+      - name: Update portal-api cve-report (SCANNED)
+        run: |
+          curl -fsSL -X PATCH \
+            "${PORTAL_API_URL}/api/v1/releases/${{ github.event.inputs.release_id }}/cve-report" \
+            -H "Authorization: Bearer ${PORTAL_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "critical": ${{ steps.parse.outputs.critical }},
+              "high":     ${{ steps.parse.outputs.high }},
+              "medium":   ${{ steps.parse.outputs.medium }},
+              "low":      ${{ steps.parse.outputs.low }},
+              "sbom_uri": "${{ needs.sbom.outputs.sbom_uri }}"
+            }'
+
+      - name: Fail if Critical CVEs found
+        if: ${{ steps.parse.outputs.critical > 0 }}
+        run: |
+          echo "::error::Critical CVEs found (${{ steps.parse.outputs.critical }}). Pipeline stopped — release will not be signed or published."
+          exit 1
+
+  # ──────────────────────────────────────────────
+  # Job 3: Cosign 서명
+  # ──────────────────────────────────────────────
+  sign:
+    name: Sign Image
+    runs-on: ubuntu-latest
+    needs: cve-scan
+    steps:
+      - name: Log in to Harbor
+        run: echo "$HARBOR_PASSWORD" | docker login "$HARBOR_URL" -u "$HARBOR_USER" --password-stdin
+
+      - name: Install Cosign
+        run: |
+          curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 \
+            -o /usr/local/bin/cosign && chmod +x /usr/local/bin/cosign
+
+      - name: Write Cosign key
+        run: |
+          echo "$COSIGN_KEY" > cosign.key
+          chmod 600 cosign.key
+
+      - name: Sign image
+        id: cosign
+        run: |
+          COSIGN_PASSWORD="$COSIGN_KEY_PASSWORD" cosign sign \
+            --key cosign.key \
+            "${{ github.event.inputs.image_ref }}"
+
+          # 서명 다이제스트를 portal-api에 전달할 값으로 추출
+          SIG=$(COSIGN_PASSWORD="$COSIGN_KEY_PASSWORD" cosign verify \
+            --key cosign.key \
+            "${{ github.event.inputs.image_ref }}" 2>/dev/null \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[0].get('critical',{}).get('identity',{}).get('docker-reference','signed'))" 2>/dev/null \
+            || echo "signed")
+
+          echo "signature=${SIG}" >> "$GITHUB_OUTPUT"
+
+      - name: Cleanup key
+        if: always()
+        run: rm -f cosign.key
+
+      - name: Update portal-api sign status (SIGNED)
+        run: |
+          curl -fsSL -X PATCH \
+            "${PORTAL_API_URL}/api/v1/releases/${{ github.event.inputs.release_id }}/sign" \
+            -H "Authorization: Bearer ${PORTAL_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "signature": "${{ steps.cosign.outputs.signature }}",
+              "signed_by": "gitea-actions/security-scan"
+            }'
+
+      - name: Summary
+        run: |
+          echo "## Security Scan Complete ✅" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Item | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Image | \`${{ github.event.inputs.image_ref }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Release ID | \`${{ github.event.inputs.release_id }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Critical CVEs | ${{ needs.cve-scan.outputs.critical }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| High CVEs | ${{ needs.cve-scan.outputs.high }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Status | SIGNED — ready to publish |" >> "$GITHUB_STEP_SUMMARY"

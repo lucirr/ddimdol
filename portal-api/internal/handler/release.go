@@ -155,6 +155,45 @@ func (h *ReleaseHandler) UpdateCveReport(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": release})
 }
 
+func (h *ReleaseHandler) SignRelease(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+
+	var req struct {
+		Signature string `json:"signature" binding:"required"`
+		SignedBy  string `json:"signed_by" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	release, err := h.repo.FindByID(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "release not found"})
+		return
+	}
+
+	if release.Status != domain.ReleaseStatusScanned {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "release must be SCANNED before signing"})
+		return
+	}
+
+	release.Signature = req.Signature
+	release.SignedBy = req.SignedBy
+	release.Status = domain.ReleaseStatusSigned
+
+	if err := h.repo.Save(c.Request.Context(), release); err != nil {
+		h.logger.Error("sign release", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": release})
+}
+
 func (h *ReleaseHandler) PublishRelease(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {

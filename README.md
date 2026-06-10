@@ -10,17 +10,27 @@
                    중앙 (Central Control Plane)
 =================================================================
 
-  [개발자] --> Gitea --> Gitea Actions
-                            |
-                            v
-            +---------------+--------------+
-            |     보안점검 파이프라인        |
-            |  Syft(SBOM) -> Trivy/Grype   |
-            |   -> Cosign Sign -> Harbor   |
-            +---------------+--------------+
-                            |
-                            v
-                      Harbor Registry
+  [외부 이미지]  (docker.io/vendor/app:v1.2.3)
+       |
+       | 관리자 수동 pull/retag/push
+       v
+  Harbor Registry  ←──────────────────────────────────┐
+       |                                               │
+       | 관리자: POST /api/v1/releases (DRAFT)          │
+       v                                               │
+  Portal API                                           │
+       |                                               │
+       | 관리자: Gitea UI → Actions → "Security Scan"  │
+       |         (release_id + image_ref 입력)          │
+       v                                               │
+  +--------------------+  Gitea Actions workflow_dispatch
+  |  보안점검 파이프라인  |
+  |  ① Syft  → SBOM    |──attach──> Harbor (OCI referrer)
+  |  ② Trivy → CVE     |──PATCH /releases/:id/cve-report──> Portal API (SCANNED)
+  |  ③ Critical? → 중단 |  (Critical CVE 있으면 파이프라인 실패, 서명/발행 불가)
+  |  ④ Cosign → 서명    |──attach──────────────────────────┘
+  |                    |──PATCH /releases/:id/sign ──────> Portal API (SIGNED)
+  +--------------------+
                             |
                             v
                   +---------+----------+
@@ -187,13 +197,28 @@ central-operator: 릴리스 발행 (is_urgent=true)
 ## 핵심 기능
 
 ### 릴리스 관리
-소프트웨어 패키지를 `DRAFT → SCANNED → SIGNED → PUBLISHED` 단계로 관리합니다.  
-각 릴리스는 아티팩트 다이제스트, SBOM URI, CVE 리포트, 서명 정보를 포함합니다.
+외부 이미지를 Harbor에 등록 후 보안 점검을 거쳐 배포합니다.  
+상태 흐름: `DRAFT → SCANNED → SIGNED → PUBLISHED`
 
-- **등록**: Portal UI에서 패키지명/버전/이미지 정보 입력 → `DRAFT` 상태로 생성
-  - `is_urgent=true` 설정 시 에지 관리자 승인 없이 자동 배포 (긴급 패치)
-- **발행**: `SCANNED` 또는 `SIGNED` 상태의 릴리스에 한해 발행 가능 (Critical CVE가 있으면 발행 거부)
-- **NATS 이벤트**: 발행 시 `releases.published.<id>` 이벤트 발행 → edge-agent가 수신하여 승인 요청 자동 생성
+| 단계 | 트리거 | 설명 |
+|------|--------|------|
+| `DRAFT` | 관리자 `POST /api/v1/releases` | Harbor image_ref 등록 |
+| `SCANNED` | Gitea Actions (Syft + Trivy) | SBOM 생성, CVE 스캔 결과 저장. Critical CVE 있으면 이후 단계 차단 |
+| `SIGNED` | Gitea Actions (Cosign) | 조직 내부 키로 서명 — "검토 완료" 승인 의미 |
+| `PUBLISHED` | 관리자 `POST /api/v1/releases/:id/publish` | NATS 이벤트 발행 → 에지 배포 시작 |
+
+**보안 점검 실행 방법**: Gitea UI → Actions 탭 → "Security Scan" → Run workflow  
+입력값: `release_id` (Portal UUID), `image_ref` (Harbor 주소)
+
+파이프라인: `.gitea/workflows/security-scan.yml`
+- ① **Syft**: SBOM(SPDX JSON) 생성 → Harbor OCI referrer로 attach
+- ② **Trivy**: CVE 스캔 → `PATCH /api/v1/releases/:id/cve-report` → `SCANNED`
+- ③ **Critical CVE 차단**: Critical > 0 이면 파이프라인 실패, 서명 단계 진입 불가
+- ④ **Cosign**: 내부 키로 이미지 서명 → `PATCH /api/v1/releases/:id/sign` → `SIGNED`
+
+- **발행**: `SCANNED` 또는 `SIGNED` 상태에서만 가능. Critical CVE 있으면 발행 거부
+- **긴급 패치**: `is_urgent=true` 설정 시 에지 관리자 승인 없이 자동 배포
+- **NATS 이벤트**: 발행 시 `releases.published.<id>` 이벤트 → edge-agent 승인 요청 자동 생성
 
 ### 승인 워크플로
 엣지 노드별 배포 승인 요청을 생성하고 `PENDING → APPROVED → APPLIED` 흐름으로 처리합니다.  
@@ -345,7 +370,8 @@ make run
 | GET | `/api/v1/edges/:id` | 에지 노드 상세 |
 | POST | `/api/v1/releases` | 릴리스 등록 |
 | GET | `/api/v1/releases` | 릴리스 목록 |
-| PATCH | `/api/v1/releases/:id/cve-report` | CVE 리포트 업데이트 |
+| PATCH | `/api/v1/releases/:id/cve-report` | CVE 리포트 업데이트 (SCANNED) |
+| PATCH | `/api/v1/releases/:id/sign` | 서명 정보 등록 (SIGNED) |
 | POST | `/api/v1/releases/:id/publish` | 릴리스 발행 |
 | POST/GET | `/api/v1/approvals` | 승인 요청 생성/목록 |
 | POST | `/api/v1/approvals/:id/approve` | 승인 |
