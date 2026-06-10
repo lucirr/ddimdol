@@ -20,6 +20,10 @@ type Config struct {
 	CentralAPIURL     string
 	HarborURL         string
 	HeartbeatInterval time.Duration
+	TLSEnabled        bool   // AGENT_TLS_ENABLED (default: false)
+	TLSCAPath         string // AGENT_TLS_CA
+	TLSCertPath       string // AGENT_TLS_CERT
+	TLSKeyPath        string // AGENT_TLS_KEY
 }
 
 // Load reads configuration from environment variables.
@@ -31,10 +35,11 @@ func Load() (*Config, error) {
 
 	// Defaults
 	v.SetDefault("NATS_URL", "nats://localhost:4222")
-	v.SetDefault("CENTRAL_API_URL", "http://localhost:8080")
+	v.SetDefault("CENTRAL_API_URL", "http://localhost:8081")
 	v.SetDefault("HARBOR_URL", "https://harbor.local")
 	v.SetDefault("HEARTBEAT_INTERVAL", "10s")
 	v.SetDefault("EDGE_REGION", "default")
+	v.SetDefault("AGENT_TLS_ENABLED", false)
 
 	edgeID := v.GetString("EDGE_ID")
 	if edgeID == "" {
@@ -52,6 +57,15 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("invalid HEARTBEAT_INTERVAL %q: %w", intervalStr, err)
 	}
 
+	tlsEnabled := v.GetBool("AGENT_TLS_ENABLED")
+	tlsCAPath := v.GetString("AGENT_TLS_CA")
+	tlsCertPath := v.GetString("AGENT_TLS_CERT")
+	tlsKeyPath := v.GetString("AGENT_TLS_KEY")
+
+	if tlsEnabled && (tlsCAPath == "" || tlsCertPath == "" || tlsKeyPath == "") {
+		return nil, fmt.Errorf("AGENT_TLS_CA, AGENT_TLS_CERT, and AGENT_TLS_KEY are required when AGENT_TLS_ENABLED is true")
+	}
+
 	return &Config{
 		EdgeID:            edgeID,
 		EdgeName:          edgeName,
@@ -64,5 +78,9 @@ func Load() (*Config, error) {
 		CentralAPIURL:     v.GetString("CENTRAL_API_URL"),
 		HarborURL:         v.GetString("HARBOR_URL"),
 		HeartbeatInterval: interval,
+		TLSEnabled:        tlsEnabled,
+		TLSCAPath:         tlsCAPath,
+		TLSCertPath:       tlsCertPath,
+		TLSKeyPath:        tlsKeyPath,
 	}, nil
 }

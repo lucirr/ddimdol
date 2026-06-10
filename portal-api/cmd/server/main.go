@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/didimdol/portal-api/internal/middleware"
 	"github.com/didimdol/portal-api/internal/repository/postgres"
 	"github.com/didimdol/portal-api/internal/service"
+	"github.com/didimdol/portal-api/internal/tlsconfig"
 )
 
 func main() {
@@ -161,7 +163,6 @@ func main() {
 	agentH := handler.NewAgentHandler(edgeRepo, approvalRepo, deploymentRepo, releaseRepo, natsSvc, logger)
 	agentV1 := agentRouter.Group("/agent/v1")
 	{
-		agentV1.POST("/heartbeat", agentH.Heartbeat)
 		agentV1.POST("/approval-requests", agentH.CreateApprovalRequest)
 		agentV1.POST("/download-progress", agentH.DownloadProgress)
 		agentV1.POST("/deployment-result", agentH.DeploymentResult)
@@ -171,7 +172,6 @@ func main() {
 	agentAddr := fmt.Sprintf(":%d", cfg.AgentPort)
 
 	logger.Info("starting portal-api server", zap.String("addr", apiAddr))
-	logger.Info("starting agent server (mTLS)", zap.String("addr", agentAddr))
 
 	errCh := make(chan error, 2)
 
@@ -181,11 +181,34 @@ func main() {
 		}
 	}()
 
-	go func() {
-		if err := http.ListenAndServe(agentAddr, agentRouter); err != nil {
-			errCh <- fmt.Errorf("agent server error: %w", err)
+	if cfg.AgentTLSEnabled {
+		logger.Info("starting agent server (mTLS enabled)", zap.String("addr", agentAddr))
+		tlsCfg, err := tlsconfig.ServerConfig(cfg.AgentTLSCAPath, cfg.AgentTLSCertPath, cfg.AgentTLSKeyPath)
+		if err != nil {
+			logger.Fatal("failed to build agent TLS config", zap.Error(err))
 		}
-	}()
+		agentSrv := &http.Server{
+			Addr:      agentAddr,
+			Handler:   agentRouter,
+			TLSConfig: tlsCfg,
+		}
+		go func() {
+			if err := agentSrv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errCh <- fmt.Errorf("agent server error: %w", err)
+			}
+		}()
+	} else {
+		// TLS disabled: bind to loopback only so the agent port is never reachable
+		// from outside the host. This mode is for local development only.
+		loopbackAddr := fmt.Sprintf("127.0.0.1:%d", cfg.AgentPort)
+		logger.Warn("agent server TLS DISABLED — bound to loopback only (127.0.0.1). DO NOT USE IN PRODUCTION.",
+			zap.String("addr", loopbackAddr))
+		go func() {
+			if err := http.ListenAndServe(loopbackAddr, agentRouter); err != nil {
+				errCh <- fmt.Errorf("agent server error: %w", err)
+			}
+		}()
+	}
 
 	if err := <-errCh; err != nil {
 		logger.Fatal("server terminated", zap.Error(err))

@@ -329,6 +329,10 @@ make run
 | `CENTRAL_API_URL` | `http://localhost:8081` | 중앙 Agent API 주소 |
 | `HARBOR_URL` | `https://harbor.local` | Harbor 레지스트리 주소 |
 | `HEARTBEAT_INTERVAL` | `10s` | 하트비트 전송 주기 |
+| `AGENT_TLS_ENABLED` | `false` | mTLS 활성화 여부 |
+| `AGENT_TLS_CA` | — | CA 인증서 경로 (TLS 활성 시 필수) |
+| `AGENT_TLS_CERT` | — | 클라이언트 인증서 경로 (TLS 활성 시 필수) |
+| `AGENT_TLS_KEY` | — | 클라이언트 키 경로 (TLS 활성 시 필수) |
 
 ## API 엔드포인트
 

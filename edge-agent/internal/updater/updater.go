@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/your-org/edge-agent/internal/reporter"
@@ -63,6 +62,7 @@ func New(
 	js jetstream.JetStream,
 	centralURL, harborURL string,
 	rep *reporter.Reporter,
+	client *http.Client,
 	logger *zap.Logger,
 ) *Updater {
 	return &Updater{
@@ -72,7 +72,7 @@ func New(
 		harborURL:      harborURL,
 		reporter:       rep,
 		catalogWatcher: newCatalogWatcher(rep, "edgedip", logger),
-		client:         &http.Client{Timeout: 30 * time.Second},
+		client:         client,
 		logger:         logger,
 	}
 }
@@ -281,6 +281,9 @@ func (u *Updater) applyToCatalog(ctx context.Context, event ApprovalEvent) error
 	if !safeFieldPattern.MatchString(event.ReleaseID) {
 		return fmt.Errorf("invalid ReleaseID format: %q", event.ReleaseID)
 	}
+	if !safeFieldPattern.MatchString(u.harborURL) {
+		return fmt.Errorf("invalid harborURL format: %q", u.harborURL)
+	}
 
 	yaml := fmt.Sprintf(`apiVersion: edgedip.io/v1alpha1
 kind: CatalogPackage
@@ -334,6 +337,10 @@ func extractVersion(imageRef string) string {
 
 // deploy pulls the container image from the local Harbor mirror using docker/nerdctl.
 func (u *Updater) deploy(ctx context.Context, event ApprovalEvent) error {
+	if !safeFieldPattern.MatchString(event.ImageRef) {
+		return fmt.Errorf("invalid ImageRef format: %q", event.ImageRef)
+	}
+
 	imageRef := event.ImageRef
 
 	// Prefer nerdctl (containerd) if available, fall back to docker.

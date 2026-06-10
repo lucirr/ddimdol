@@ -30,12 +30,12 @@ type Reporter struct {
 	logger     *zap.Logger
 }
 
-// New creates a Reporter with a sensible HTTP timeout.
-func New(centralURL, edgeID string, logger *zap.Logger) *Reporter {
+// New creates a Reporter with the provided HTTP client.
+func New(centralURL, edgeID string, client *http.Client, logger *zap.Logger) *Reporter {
 	return &Reporter{
 		centralURL: centralURL,
 		edgeID:     edgeID,
-		client:     &http.Client{Timeout: 15 * time.Second},
+		client:     client,
 		logger:     logger,
 	}
 }

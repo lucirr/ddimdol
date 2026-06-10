@@ -41,62 +41,6 @@ func NewAgentHandler(
 	}
 }
 
-func (h *AgentHandler) Heartbeat(c *gin.Context) {
-	var req struct {
-		EdgeID       string  `json:"edge_id" binding:"required"`
-		CPUPct       float64 `json:"cpu_pct"`
-		MemPct       float64 `json:"mem_pct"`
-		DiskPct      float64 `json:"disk_pct"`
-		AgentVersion string  `json:"agent_version"`
-		K8sVersion   string  `json:"k8s_version"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	edgeID, err := uuid.Parse(req.EdgeID)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid edge_id"})
-		return
-	}
-
-	edge, err := h.edgeRepo.FindByID(c.Request.Context(), edgeID)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "edge not found"})
-		return
-	}
-
-	now := time.Now()
-	edge.Status = domain.EdgeStatusUp
-	edge.LastHeartbeatAt = &now
-	if req.AgentVersion != "" {
-		edge.AgentVersion = req.AgentVersion
-	}
-	if req.K8sVersion != "" {
-		edge.K8sVersion = req.K8sVersion
-	}
-	edge.UpdatedAt = now
-
-	if err := h.edgeRepo.Save(c.Request.Context(), edge); err != nil {
-		h.logger.Error("save heartbeat", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	if h.nats != nil {
-		_ = h.nats.PublishHeartbeatEvent(c.Request.Context(), service.HeartbeatEvent{
-			EdgeID:    req.EdgeID,
-			Timestamp: now,
-			CPUPct:    req.CPUPct,
-			MemPct:    req.MemPct,
-			DiskPct:   req.DiskPct,
-		})
-	}
-
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{"status": "ok"}})
-}
-
 func (h *AgentHandler) CreateApprovalRequest(c *gin.Context) {
 	var req struct {
 		ReleaseID string `json:"release_id" binding:"required"`
