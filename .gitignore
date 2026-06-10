@@ -38,5 +38,6 @@ next-env.d.ts
 .vscode
 .claude
 .omc
+.worktrees
 
 /portal-web/dist.worktrees/
