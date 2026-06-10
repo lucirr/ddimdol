@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -42,6 +43,13 @@ func (h *ReleaseHandler) CreateRelease(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+
+	if req.ImageRef != "" {
+		if err := validateImageRef(req.ImageRef); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid image_ref format"})
+			return
+		}
 	}
 
 	release := &domain.Release{
@@ -159,35 +167,55 @@ func (h *ReleaseHandler) UpdateCveReport(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": release})
 }
 
-// verifyCosignSignature runs `cosign verify --key <pubkey-file> <imageRef>` and
-// returns the digest string on success. COSIGN_PUBLIC_KEY env var must contain
-// the PEM-encoded public key.
-func verifyCosignSignature(imageRef string) (string, error) {
-	pubKeyPEM := os.Getenv("COSIGN_PUBLIC_KEY")
-	if pubKeyPEM == "" {
-		return "", fmt.Errorf("COSIGN_PUBLIC_KEY is not configured")
+// imageRefPattern matches valid Harbor/OCI image references and rejects leading
+// hyphens that could be interpreted as flags by cosign/trivy/syft.
+// Format: host[:port]/path/name(:tag|@sha256:digest)
+var imageRefPattern = regexp.MustCompile(
+	`^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?(:[0-9]+)?(/[a-zA-Z0-9._-]+)+(@sha256:[a-f0-9]{64}|:[a-zA-Z0-9._-]+)$`,
+)
+
+// validateImageRef returns an error if imageRef does not match the expected
+// registry-reference shape or could be misinterpreted as a CLI flag.
+func validateImageRef(imageRef string) error {
+	if !imageRefPattern.MatchString(imageRef) {
+		return fmt.Errorf("invalid image reference format")
+	}
+	return nil
+}
+
+// verifyCosignSignature runs `cosign verify -- <imageRef>` with the configured
+// public key. The `--` separator prevents imageRef from being parsed as a flag.
+// COSIGN_PUBLIC_KEY env var must contain the PEM-encoded public key.
+func verifyCosignSignature(imageRef string) error {
+	if err := validateImageRef(imageRef); err != nil {
+		return err
 	}
 
-	// Write PEM to a temp file — cosign --key requires a file path.
+	pubKeyPEM := os.Getenv("COSIGN_PUBLIC_KEY")
+	if pubKeyPEM == "" {
+		return fmt.Errorf("COSIGN_PUBLIC_KEY is not configured")
+	}
+
 	tmp, err := os.CreateTemp("", "cosign-pub-*.pem")
 	if err != nil {
-		return "", fmt.Errorf("create temp key file: %w", err)
+		return fmt.Errorf("create temp key file: %w", err)
 	}
 	defer os.Remove(tmp.Name())
 	if _, err := tmp.WriteString(pubKeyPEM); err != nil {
-		return "", fmt.Errorf("write temp key file: %w", err)
+		return fmt.Errorf("write temp key file: %w", err)
 	}
 	tmp.Close()
 
+	// `--` ensures imageRef is never parsed as a flag argument.
 	out, err := exec.Command("cosign", "verify",
 		"--key", tmp.Name(),
 		"--output", "text",
-		imageRef,
+		"--", imageRef,
 	).CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("cosign verify failed: %w\n%s", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("cosign verify: %w (output: %s)", err, strings.TrimSpace(string(out)))
 	}
-	return strings.TrimSpace(string(out)), nil
+	return nil
 }
 
 func (h *ReleaseHandler) SignRelease(c *gin.Context) {
@@ -219,11 +247,11 @@ func (h *ReleaseHandler) SignRelease(c *gin.Context) {
 	}
 
 	// Server-side verification: confirm the image is actually signed with our key.
-	if _, err := verifyCosignSignature(release.ImageRef); err != nil {
+	if err := verifyCosignSignature(release.ImageRef); err != nil {
 		h.logger.Warn("cosign verification failed",
 			zap.String("image_ref", release.ImageRef),
 			zap.Error(err))
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("signature verification failed: %v", err)})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "signature verification failed"})
 		return
 	}
 
