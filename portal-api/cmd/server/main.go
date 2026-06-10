@@ -159,6 +159,7 @@ func main() {
 	// mTLS-only agent router (separate port)
 	agentRouter := gin.New()
 	agentRouter.Use(gin.Recovery())
+	agentRouter.Use(middleware.AgentMTLSIdentity())
 
 	agentH := handler.NewAgentHandler(edgeRepo, approvalRepo, deploymentRepo, releaseRepo, natsSvc, logger)
 	agentV1 := agentRouter.Group("/agent/v1")

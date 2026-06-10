@@ -1,13 +1,13 @@
 package middleware
 
 import (
-	"encoding/base64"
-	"encoding/json"
+	"context"
 	"net/http"
 	"os"
 	"strings"
 	"sync"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
@@ -15,14 +15,42 @@ import (
 var (
 	devModeWarnOnce sync.Once
 	authLogger      *zap.Logger
+
+	verifierOnce sync.Once
+	verifier     *oidc.IDTokenVerifier
+	verifierErr  error
 )
 
 func init() {
 	authLogger, _ = zap.NewProduction()
 }
 
-// Auth validates Keycloak OIDC JWT tokens.
-// When DEV_MODE=true, skips authentication for local development.
+// initVerifier lazily creates the OIDC token verifier from KEYCLOAK_ISSUER env var.
+// Expected format: https://keycloak.host/realms/<realm>
+func initVerifier() (*oidc.IDTokenVerifier, error) {
+	verifierOnce.Do(func() {
+		issuer := os.Getenv("KEYCLOAK_ISSUER")
+		if issuer == "" {
+			verifierErr = nil // verifier stays nil — caller must handle
+			return
+		}
+		provider, err := oidc.NewProvider(context.Background(), issuer)
+		if err != nil {
+			verifierErr = err
+			return
+		}
+		cfg := &oidc.Config{
+			// portal-api is not an OAuth2 resource server with a fixed audience;
+			// audience check is skipped here and enforced by Keycloak client scopes.
+			SkipClientIDCheck: true,
+		}
+		verifier = provider.Verifier(cfg)
+	})
+	return verifier, verifierErr
+}
+
+// Auth validates Keycloak OIDC JWT tokens via JWKS signature verification.
+// Falls back to DEV_MODE bypass when DEV_MODE=true.
 func Auth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if os.Getenv("DEV_MODE") == "true" {
@@ -37,38 +65,81 @@ func Auth() gin.HandlerFunc {
 			return
 		}
 
-		token := ""
-		authHeader := c.GetHeader("Authorization")
-		if strings.HasPrefix(authHeader, "Bearer ") {
-			token = strings.TrimPrefix(authHeader, "Bearer ")
-		} else if queryToken := c.Query("access_token"); queryToken != "" {
-			token = queryToken
-		}
-
-		if token == "" {
+		rawToken := extractBearerToken(c)
+		if rawToken == "" {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing or invalid authorization header"})
 			return
 		}
 
-		// TODO: Validate JWT signature against Keycloak JWKS endpoint.
-		// Signature validation is currently pending — only claims are parsed here.
-		claims := parseJWTClaims(token)
+		v, err := initVerifier()
+		if err != nil {
+			authLogger.Error("OIDC provider init failed", zap.Error(err))
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "auth provider unavailable"})
+			return
+		}
+		if v == nil {
+			authLogger.Error("KEYCLOAK_ISSUER not configured")
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "auth provider not configured"})
+			return
+		}
 
-		sub, _ := claims["sub"].(string)
+		idToken, err := v.Verify(c.Request.Context(), rawToken)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+			return
+		}
+
+		// Extract custom claims from verified token.
+		var extra struct {
+			Sub          string            `json:"sub"`
+			RealmAccess  map[string][]string `json:"realm_access"`
+			TenantID     string            `json:"tenant_id"`
+		}
+		if err := idToken.Claims(&extra); err != nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "failed to parse token claims"})
+			return
+		}
+
+		sub := extra.Sub
 		if sub == "" {
 			sub = "unknown"
 		}
 		c.Set("user_id", sub)
-
-		// Keycloak stores roles under realm_access.roles
-		roles := extractRealmRoles(claims)
-		c.Set("roles", roles)
-
-		// Custom claim: tenant_id (set in Keycloak via mapper)
-		if tid, ok := claims["tenant_id"].(string); ok && tid != "" {
-			c.Set("tenant_id", tid)
+		c.Set("roles", extra.RealmAccess["roles"])
+		if extra.TenantID != "" {
+			c.Set("tenant_id", extra.TenantID)
 		}
 
+		c.Next()
+	}
+}
+
+// AgentMTLSIdentity extracts the edge ID from the mTLS client certificate CN
+// and stores it in the gin context as "mtls_edge_id". Call this middleware on
+// the Agent API router (port :8081) where mTLS is required.
+func AgentMTLSIdentity() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if os.Getenv("DEV_MODE") == "true" {
+			// In dev mode the edge ID is taken from the X-Edge-ID header.
+			if eid := c.GetHeader("X-Edge-ID"); eid != "" {
+				c.Set("mtls_edge_id", eid)
+			}
+			c.Next()
+			return
+		}
+
+		if c.Request.TLS == nil || len(c.Request.TLS.VerifiedChains) == 0 {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "mTLS client certificate required"})
+			return
+		}
+
+		// The leaf certificate CN carries the edge UUID.
+		cn := c.Request.TLS.VerifiedChains[0][0].Subject.CommonName
+		if cn == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "client certificate CN is empty"})
+			return
+		}
+		c.Set("mtls_edge_id", cn)
 		c.Next()
 	}
 }
@@ -104,42 +175,9 @@ func HasRole(c *gin.Context, role string) bool {
 	return false
 }
 
-// parseJWTClaims decodes the payload of a JWT without verifying its signature.
-// Returns nil on any parse failure.
-func parseJWTClaims(token string) map[string]any {
-	parts := strings.Split(token, ".")
-	if len(parts) < 3 {
-		return nil
+func extractBearerToken(c *gin.Context) string {
+	if h := c.GetHeader("Authorization"); strings.HasPrefix(h, "Bearer ") {
+		return strings.TrimPrefix(h, "Bearer ")
 	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		payload, err = base64.StdEncoding.DecodeString(parts[1])
-		if err != nil {
-			return nil
-		}
-	}
-	var claims map[string]any
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		return nil
-	}
-	return claims
-}
-
-// extractRealmRoles extracts Keycloak realm_access.roles from parsed JWT claims.
-func extractRealmRoles(claims map[string]any) []string {
-	if claims == nil {
-		return nil
-	}
-	realmAccess, _ := claims["realm_access"].(map[string]any)
-	if realmAccess == nil {
-		return nil
-	}
-	raw, _ := realmAccess["roles"].([]any)
-	roles := make([]string, 0, len(raw))
-	for _, r := range raw {
-		if s, ok := r.(string); ok {
-			roles = append(roles, s)
-		}
-	}
-	return roles
+	return c.Query("access_token")
 }

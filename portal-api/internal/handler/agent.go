@@ -41,6 +41,20 @@ func NewAgentHandler(
 	}
 }
 
+// callerEdgeID returns the edge UUID from the mTLS CN stored by AgentMTLSIdentity middleware.
+// Returns error when the CN is absent or not a valid UUID.
+func callerEdgeID(c *gin.Context) (uuid.UUID, error) {
+	cn, ok := c.Get("mtls_edge_id")
+	if !ok {
+		return uuid.Nil, fmt.Errorf("missing mTLS edge identity")
+	}
+	id, err := uuid.Parse(cn.(string))
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("mTLS CN is not a valid UUID: %s", cn)
+	}
+	return id, nil
+}
+
 func (h *AgentHandler) CreateApprovalRequest(c *gin.Context) {
 	var req struct {
 		ReleaseID string `json:"release_id" binding:"required"`
@@ -61,6 +75,17 @@ func (h *AgentHandler) CreateApprovalRequest(c *gin.Context) {
 	edgeID, err := uuid.Parse(req.EdgeID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid edge_id"})
+		return
+	}
+
+	// Bind caller identity from mTLS CN to prevent cross-edge spoofing.
+	callerID, err := callerEdgeID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+	if callerID != edgeID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "edge_id does not match mTLS certificate CN"})
 		return
 	}
 
@@ -142,6 +167,11 @@ func (h *AgentHandler) DownloadProgress(c *gin.Context) {
 		return
 	}
 
+	if req.ProgressPct < 0 || req.ProgressPct > 100 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "progress_pct must be between 0 and 100"})
+		return
+	}
+
 	approvalID, err := uuid.Parse(req.ApprovalID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid approval_id"})
@@ -151,6 +181,17 @@ func (h *AgentHandler) DownloadProgress(c *gin.Context) {
 	approval, err := h.approvalRepo.FindByID(c.Request.Context(), approvalID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "approval not found"})
+		return
+	}
+
+	// Require caller's mTLS CN to match the approval's edge.
+	callerID, err := callerEdgeID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+	if callerID != approval.EdgeID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "mTLS CN does not match approval edge"})
 		return
 	}
 
@@ -186,6 +227,11 @@ func (h *AgentHandler) DeploymentResult(c *gin.Context) {
 		return
 	}
 
+	if req.ProgressPct < 0 || req.ProgressPct > 100 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "progress_pct must be between 0 and 100"})
+		return
+	}
+
 	approvalID, err := uuid.Parse(req.ApprovalID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid approval_id"})
@@ -195,6 +241,17 @@ func (h *AgentHandler) DeploymentResult(c *gin.Context) {
 	approval, err := h.approvalRepo.FindByID(c.Request.Context(), approvalID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "approval not found"})
+		return
+	}
+
+	// Require caller's mTLS CN to match the approval's edge.
+	callerID, err := callerEdgeID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+	if callerID != approval.EdgeID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "mTLS CN does not match approval edge"})
 		return
 	}
 
