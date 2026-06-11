@@ -37,7 +37,7 @@ func Load() (*Config, error) {
 	v.SetDefault("NATS_URL", "nats://localhost:4222")
 	v.SetDefault("CENTRAL_API_URL", "http://localhost:8081")
 	v.SetDefault("HARBOR_URL", "https://harbor.local")
-	v.SetDefault("HEARTBEAT_INTERVAL", "10s")
+	v.SetDefault("HEARTBEAT_INTERVAL", "30s")
 	v.SetDefault("EDGE_REGION", "default")
 	v.SetDefault("AGENT_TLS_ENABLED", false)
 
