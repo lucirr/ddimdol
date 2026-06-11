@@ -10,10 +10,11 @@ import (
 
 // Client represents a single connected WebSocket client.
 type Client struct {
-	conn     *websocket.Conn
-	send     chan []byte
-	tenantID string // empty string means central-operator (sees all tenants)
-	logger   *zap.Logger
+	conn       *websocket.Conn
+	send       chan []byte
+	tenantID   string
+	isOperator bool // set only when the caller holds the central-operator role
+	logger     *zap.Logger
 }
 
 // Hub maintains the set of active clients and broadcasts messages to them.
@@ -82,9 +83,8 @@ func (h *Hub) Broadcast(eventType string, payload any) {
 	}
 }
 
-// BroadcastTenant sends an event only to clients whose tenantID matches.
-// Clients registered with an empty tenantID (central-operators) receive
-// events for every tenant.
+// BroadcastTenant sends an event only to clients that belong to tenantID,
+// or to clients that hold the central-operator role (isOperator == true).
 func (h *Hub) BroadcastTenant(tenantID, eventType string, payload any) {
 	msg := marshal(h.logger, eventType, payload)
 	if msg == nil {
@@ -93,7 +93,7 @@ func (h *Hub) BroadcastTenant(tenantID, eventType string, payload any) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	for client := range h.clients {
-		if client.tenantID != "" && client.tenantID != tenantID {
+		if !client.isOperator && client.tenantID != tenantID {
 			continue
 		}
 		select {
@@ -104,15 +104,16 @@ func (h *Hub) BroadcastTenant(tenantID, eventType string, payload any) {
 	}
 }
 
-// ServeClient registers the connection with the given tenantID, then blocks
-// reading until the client disconnects. Pass an empty tenantID for
-// central-operators who should receive events for all tenants.
-func (h *Hub) ServeClient(conn *websocket.Conn, tenantID string) {
+// ServeClient registers the connection, then blocks reading until the client
+// disconnects. isOperator must be true only when the caller has been verified
+// to hold the central-operator role by the Auth middleware.
+func (h *Hub) ServeClient(conn *websocket.Conn, tenantID string, isOperator bool) {
 	client := &Client{
-		conn:     conn,
-		send:     make(chan []byte, 64),
-		tenantID: tenantID,
-		logger:   h.logger,
+		conn:       conn,
+		send:       make(chan []byte, 64),
+		tenantID:   tenantID,
+		isOperator: isOperator,
+		logger:     h.logger,
 	}
 	h.register <- client
 

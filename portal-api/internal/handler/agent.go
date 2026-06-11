@@ -19,6 +19,7 @@ type AgentHandler struct {
 	approvalRepo   repository.ApprovalRepository
 	deploymentRepo repository.DeploymentRepository
 	releaseRepo    repository.ReleaseRepository
+	edgeSvc        *service.EdgeService
 	nats           *service.NatsService
 	wsHub          wsbroadcaster
 	logger         *zap.Logger
@@ -44,6 +45,7 @@ func NewAgentHandler(
 		approvalRepo:   approvalRepo,
 		deploymentRepo: deploymentRepo,
 		releaseRepo:    releaseRepo,
+		edgeSvc:        service.NewEdgeService(edgeRepo),
 		nats:           nats,
 		wsHub:          wsHub,
 		logger:         logger,
@@ -335,8 +337,7 @@ func (h *AgentHandler) Heartbeat(c *gin.Context) {
 		return
 	}
 
-	edgeSvc := service.NewEdgeService(h.edgeRepo)
-	if err := edgeSvc.RecordHeartbeat(c.Request.Context(), callerID); err != nil {
+	if err := h.edgeSvc.RecordHeartbeat(c.Request.Context(), callerID); err != nil {
 		h.logger.Warn("heartbeat record failed", zap.String("edge_id", callerID.String()), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record heartbeat"})
 		return

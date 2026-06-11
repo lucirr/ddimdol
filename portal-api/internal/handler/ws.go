@@ -44,5 +44,25 @@ func (h *WsHandler) HandleEdgeEvents(c *gin.Context) {
 	tenantID, _ := c.Get("tenant_id")
 	tenantIDStr, _ := tenantID.(string)
 
-	h.hub.ServeClient(conn, tenantIDStr)
+	// isOperator is true only when the JWT carries the central-operator role,
+	// which is set by Auth middleware before this handler runs.
+	isOperator := hasRole(c, "central-operator")
+	if !isOperator && tenantIDStr == "" {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "tenant_id claim required for non-operator accounts"})
+		conn.Close()
+		return
+	}
+
+	h.hub.ServeClient(conn, tenantIDStr, isOperator)
+}
+
+func hasRole(c *gin.Context, role string) bool {
+	roles, _ := c.Get("roles")
+	roleList, _ := roles.([]string)
+	for _, r := range roleList {
+		if r == role {
+			return true
+		}
+	}
+	return false
 }
