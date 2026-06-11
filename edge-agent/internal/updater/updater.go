@@ -275,6 +275,10 @@ func (u *Updater) applyToCatalog(ctx context.Context, event ApprovalEvent) error
 	if !safeFieldPattern.MatchString(event.ImageRef) {
 		return fmt.Errorf("invalid ImageRef format: %q", event.ImageRef)
 	}
+
+	// Rewrite imageRef to local Harbor mirror so the Update Operator
+	// injects the mirror address into helm values, not the central registry.
+	event.ImageRef = rewriteToMirror(event.ImageRef, u.harborURL)
 	if !safeFieldPattern.MatchString(event.ApprovalID) {
 		return fmt.Errorf("invalid ApprovalID format: %q", event.ApprovalID)
 	}
@@ -335,13 +339,44 @@ func extractVersion(imageRef string) string {
 	return "latest"
 }
 
+// rewriteToMirror replaces the registry host in imageRef with the local Harbor mirror URL.
+// e.g. "harbor.central/edgedip/myapp:v1.2.3" → "harbor.edge/edgedip/myapp:v1.2.3"
+func rewriteToMirror(imageRef, mirrorURL string) string {
+	// Strip scheme from mirrorURL (harbor.edge or https://harbor.edge → harbor.edge)
+	host := strings.TrimPrefix(strings.TrimPrefix(mirrorURL, "https://"), "http://")
+	host = strings.TrimRight(host, "/")
+
+	// imageRef format: [registry/]repo/name:tag
+	// Find the first '/' to detect whether a registry host is present.
+	slash := strings.Index(imageRef, "/")
+	if slash == -1 {
+		// No slash — bare image name (e.g. "ubuntu:22.04"). Prepend mirror host.
+		return host + "/" + imageRef
+	}
+
+	prefix := imageRef[:slash]
+	// A registry host contains a '.' or ':' (e.g. "harbor.central", "localhost:5000").
+	// Plain path components (e.g. "library") do not.
+	if strings.ContainsAny(prefix, ".:") {
+		return host + imageRef[slash:]
+	}
+
+	// No registry host found — prepend mirror host.
+	return host + "/" + imageRef
+}
+
 // deploy pulls the container image from the local Harbor mirror using docker/nerdctl.
 func (u *Updater) deploy(ctx context.Context, event ApprovalEvent) error {
 	if !safeFieldPattern.MatchString(event.ImageRef) {
 		return fmt.Errorf("invalid ImageRef format: %q", event.ImageRef)
 	}
 
-	imageRef := event.ImageRef
+	imageRef := rewriteToMirror(event.ImageRef, u.harborURL)
+
+	u.logger.Info("pulling image from local Harbor mirror",
+		zap.String("original", event.ImageRef),
+		zap.String("mirror", imageRef),
+	)
 
 	// Prefer nerdctl (containerd) if available, fall back to docker.
 	runtime := "docker"
