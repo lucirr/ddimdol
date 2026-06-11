@@ -58,11 +58,6 @@
   (승인 완료)                ├─ APPROVALS 스트림
                             │   approvals.APPROVED.<id>
                             │
-  Portal API  <──subscribe─ EDGE_EVENTS 스트림
-  (하트비트 수신)             │   edge.heartbeat.<edge-id>
-                            │        │
-                            │        └─> DB 업데이트 + WebSocket broadcast
-                            │
                             │  ▲ NATS LeafNode 연결 (DMZ 환경)
                             │  │  에지 NATS가 중앙 NATS에 outbound로 붙음
                             │  │  NKey/JWT Credentials 또는 mTLS 인증
@@ -99,6 +94,7 @@
         |           |  pull)    |
         |           +-----------+
         |
+        | POST /agent/v1/heartbeat           → 하트비트 (DB 업데이트 + WebSocket broadcast)
         | POST /agent/v1/approval-requests  → 승인 요청 자동 생성
         | POST /agent/v1/download-progress  → 다운로드 진행률 보고
         | POST /agent/v1/deployment-result  → 배포 결과 보고
@@ -116,13 +112,21 @@
 - NATS: 에지가 중앙 NATS 서버에 outbound 연결 후 subscribe (pull 방식)
 - HTTP: 에지가 중앙 Agent API(`:8081`, mTLS)에 outbound POST
 
-**NATS JetStream 스트림**:
+**NATS JetStream 스트림** (중앙→에지 단방향):
 
-| 스트림 | Subject | 방향 | 용도 |
-|--------|---------|------|------|
-| `RELEASES` | `releases.published.<id>` | 중앙 → (에지 subscribe) | 릴리스 발행 알림 |
-| `APPROVALS` | `approvals.APPROVED.<id>` | 중앙 → (에지 subscribe) | 승인 완료 알림 |
-| `EDGE_EVENTS` | `edge.heartbeat.<edge-id>` | 에지 publish → 중앙 subscribe | 하트비트/메트릭 |
+| 스트림 | Subject | 용도 |
+|--------|---------|------|
+| `RELEASES` | `releases.published.<id>` | 릴리스 발행 알림 |
+| `APPROVALS` | `approvals.APPROVED.<id>` | 승인 완료 알림 |
+
+**에지→중앙 HTTP 엔드포인트** (Agent API `:8081`, mTLS):
+
+| 엔드포인트 | 용도 |
+|-----------|------|
+| `POST /agent/v1/heartbeat` | 하트비트 — DB 갱신 + WebSocket broadcast |
+| `POST /agent/v1/approval-requests` | 릴리스 수신 후 승인 요청 자동 생성 |
+| `POST /agent/v1/download-progress` | 이미지 다운로드 진행률 보고 |
+| `POST /agent/v1/deployment-result` | 배포 결과 보고 (COMPLETED/FAILED/ROLLED_BACK) |
 
 **DMZ 터널링 (NATS LeafNode)**:
 
