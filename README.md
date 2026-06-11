@@ -32,12 +32,6 @@
   |                    |──PATCH /releases/:id/sign ──────> Portal API (SIGNED)
   +--------------------+
                             |
-                            v
-                  +---------+----------+
-                  |   ArgoCD (중앙)     |  --> Helm Chart Repo (Gitea)
-                  |   ApplicationSet   |
-                  +---------+----------+
-                            |
         +-------------------+-------------------+
         |                                       |
         v                                       v
@@ -282,7 +276,7 @@ deployment_records          remote_sessions
 - **프론트엔드**: React 18, TypeScript, Vite, Tailwind CSS, TanStack Query, Axios
 - **DB**: PostgreSQL 16
 - **인증/인가**: Keycloak 24 (OIDC), JWT realm_roles 기반 역할 체크
-- **배포**: ArgoCD (ApplicationSet), Docker Compose (로컬)
+- **배포**: Docker Compose (로컬), Helm (운영)
 
 ## 로컬 개발 환경
 
@@ -423,6 +417,6 @@ didimdol/
 ├── update-operator/     # K8s 배포 오퍼레이터 (Go)
 ├── deploy/
 │   ├── local/           # Docker Compose 로컬 환경
-│   └── argocd/          # ArgoCD 배포 매니페스트
+│   └── helm/            # Helm 배포 차트
 └── pipelines/           # Gitea Actions CI 파이프라인
 ```
