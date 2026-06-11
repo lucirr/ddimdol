@@ -119,11 +119,13 @@ func main() {
 
 		releases := v1.Group("/releases")
 		{
-			releases.POST("", middleware.RequireRole("central-operator"), releaseH.CreateRelease)
+			// pipeline-bot: CI/CD 파이프라인 서비스 계정 (DRAFT 생성, 스캔 결과 기록, 서명)
+			// central-operator: 관리자 (위 모든 권한 + publish)
+			releases.POST("", middleware.RequireRole("central-operator", "pipeline-bot"), releaseH.CreateRelease)
 			releases.GET("", releaseH.ListReleases)
 			releases.GET("/:id", releaseH.GetRelease)
-			releases.PATCH("/:id/cve-report", middleware.RequireRole("central-operator"), releaseH.UpdateCveReport)
-			releases.PATCH("/:id/sign", middleware.RequireRole("central-operator"), releaseH.SignRelease)
+			releases.PATCH("/:id/cve-report", middleware.RequireRole("central-operator", "pipeline-bot"), releaseH.UpdateCveReport)
+			releases.PATCH("/:id/sign", middleware.RequireRole("central-operator", "pipeline-bot"), releaseH.SignRelease)
 			releases.POST("/:id/publish", middleware.RequireRole("central-operator"), releaseH.PublishRelease)
 		}
 

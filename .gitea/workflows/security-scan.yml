@@ -1,57 +1,209 @@
 name: Security Scan
 
-# 관리자가 Harbor에 외부 이미지를 push한 후 수동으로 실행합니다.
-# Gitea UI: Actions 탭 → "Security Scan" → Run workflow
+# push 트리거: 개발자가 Harbor에 push하면 자동 실행 → DRAFT 자동 생성
+# workflow_dispatch: 외부 이미지(벤더 제공 등) 수동 스캔 시 사용
 on:
+  push:
+    branches: ['main']
   workflow_dispatch:
     inputs:
       release_id:
-        description: "Portal API Release UUID"
-        required: true
+        description: "기존 Portal API Release UUID (비워두면 자동 생성)"
+        required: false
         type: string
       image_ref:
         description: "Harbor image reference (e.g. harbor.local/vendor/app:v1.2.3)"
         required: true
         type: string
+      package_name:
+        description: "패키지 이름 (자동 생성 시 필요)"
+        required: false
+        type: string
+      version:
+        description: "버전 (자동 생성 시 필요, e.g. v1.2.3)"
+        required: false
+        type: string
+      artifact_digest:
+        description: "이미지 digest (자동 생성 시 필요, sha256:...)"
+        required: false
+        type: string
 
 jobs:
-  # ──────────────────────────────────────────────
-  # Job 0: 입력값 검증 — 이후 모든 Job의 선행 조건
-  # ──────────────────────────────────────────────
+  # ──────────────────────────────────────────────────────────────
+  # Job 0: 입력값 결정 및 검증
+  #   - push 트리거: image_ref를 git 태그/커밋에서 구성, release_id는 다음 job에서 생성
+  #   - dispatch 트리거: 입력값 그대로 사용
+  # ──────────────────────────────────────────────────────────────
   validate:
     name: Validate Inputs
     runs-on: ubuntu-latest
+    outputs:
+      image_ref: ${{ steps.resolve.outputs.image_ref }}
+      package_name: ${{ steps.resolve.outputs.package_name }}
+      version: ${{ steps.resolve.outputs.version }}
+      artifact_digest: ${{ steps.resolve.outputs.artifact_digest }}
+      need_draft: ${{ steps.resolve.outputs.need_draft }}
+      release_id: ${{ steps.resolve.outputs.release_id }}
+    env:
+      HARBOR_URL: ${{ vars.HARBOR_URL }}
+      HARBOR_USER: ${{ secrets.HARBOR_USER }}
+      HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
     steps:
-      - name: Validate release_id (UUID format)
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve inputs
+        id: resolve
         env:
-          RELEASE_ID: ${{ github.event.inputs.release_id }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_IMAGE_REF: ${{ github.event.inputs.image_ref }}
+          INPUT_RELEASE_ID: ${{ github.event.inputs.release_id }}
+          INPUT_PACKAGE_NAME: ${{ github.event.inputs.package_name }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          INPUT_ARTIFACT_DIGEST: ${{ github.event.inputs.artifact_digest }}
+          GIT_SHA: ${{ github.sha }}
+          GIT_REF_NAME: ${{ github.ref_name }}
+          REPO_NAME: ${{ github.repository }}
         run: |
-          if ! echo "$RELEASE_ID" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
-            echo "::error::release_id is not a valid UUID: $RELEASE_ID"
-            exit 1
+          if [ "$EVENT_NAME" = "push" ]; then
+            # push 트리거: image_ref를 Harbor URL + repo + 커밋 SHA로 구성
+            SHORT_SHA="${GIT_SHA:0:8}"
+            PKG_NAME=$(basename "$REPO_NAME")
+            VERSION="git-${SHORT_SHA}"
+            IMAGE_REF="${HARBOR_URL}/${PKG_NAME}:${VERSION}"
+
+            echo "image_ref=${IMAGE_REF}"       >> "$GITHUB_OUTPUT"
+            echo "package_name=${PKG_NAME}"     >> "$GITHUB_OUTPUT"
+            echo "version=${VERSION}"           >> "$GITHUB_OUTPUT"
+            echo "artifact_digest="             >> "$GITHUB_OUTPUT"
+            echo "need_draft=true"              >> "$GITHUB_OUTPUT"
+            echo "release_id="                  >> "$GITHUB_OUTPUT"
+          else
+            # workflow_dispatch 트리거
+            if [ -z "$INPUT_IMAGE_REF" ]; then
+              echo "::error::image_ref is required for manual dispatch"
+              exit 1
+            fi
+
+            # release_id가 있으면 기존 릴리즈에 스캔만 수행, 없으면 DRAFT 생성
+            if [ -n "$INPUT_RELEASE_ID" ]; then
+              echo "need_draft=false"           >> "$GITHUB_OUTPUT"
+              echo "release_id=${INPUT_RELEASE_ID}" >> "$GITHUB_OUTPUT"
+            else
+              echo "need_draft=true"            >> "$GITHUB_OUTPUT"
+              echo "release_id="                >> "$GITHUB_OUTPUT"
+            fi
+
+            echo "image_ref=${INPUT_IMAGE_REF}"             >> "$GITHUB_OUTPUT"
+            echo "package_name=${INPUT_PACKAGE_NAME}"       >> "$GITHUB_OUTPUT"
+            echo "version=${INPUT_VERSION}"                 >> "$GITHUB_OUTPUT"
+            echo "artifact_digest=${INPUT_ARTIFACT_DIGEST}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Validate image_ref (Harbor reference format)
+      - name: Validate image_ref format
         env:
-          IMAGE_REF: ${{ github.event.inputs.image_ref }}
+          IMAGE_REF: ${{ steps.resolve.outputs.image_ref }}
         run: |
           # host[:port]/path/name(:tag|@sha256:digest) — leading hyphen rejected
           if ! echo "$IMAGE_REF" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?(:[0-9]+)?(/[a-zA-Z0-9._-]+)+(@sha256:[a-f0-9]{64}|:[a-zA-Z0-9._-]+)$'; then
-            echo "::error::image_ref has an invalid format"
+            echo "::error::image_ref has an invalid format: ${IMAGE_REF}"
             exit 1
           fi
 
-  # ──────────────────────────────────────────────
-  # Job 1: SBOM 생성 (Syft)
-  # ──────────────────────────────────────────────
+      - name: Validate release_id format (when provided)
+        env:
+          RELEASE_ID: ${{ steps.resolve.outputs.release_id }}
+        run: |
+          if [ -n "$RELEASE_ID" ]; then
+            if ! echo "$RELEASE_ID" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+              echo "::error::release_id is not a valid UUID: ${RELEASE_ID}"
+              exit 1
+            fi
+          fi
+
+  # ──────────────────────────────────────────────────────────────
+  # Job 1: DRAFT 자동 생성 (push 트리거 또는 dispatch에서 release_id 미입력 시)
+  # ──────────────────────────────────────────────────────────────
+  draft-register:
+    name: Register Draft Release
+    runs-on: ubuntu-latest
+    needs: validate
+    if: ${{ needs.validate.outputs.need_draft == 'true' }}
+    outputs:
+      release_id: ${{ steps.create.outputs.release_id }}
+    env:
+      IMAGE_REF: ${{ needs.validate.outputs.image_ref }}
+      PACKAGE_NAME: ${{ needs.validate.outputs.package_name }}
+      VERSION: ${{ needs.validate.outputs.version }}
+      ARTIFACT_DIGEST: ${{ needs.validate.outputs.artifact_digest }}
+      PORTAL_API_URL: ${{ vars.PORTAL_API_URL }}
+      PORTAL_API_TOKEN: ${{ secrets.PORTAL_API_TOKEN }}
+    steps:
+      - name: Create DRAFT release via portal-api
+        id: create
+        run: |
+          # artifact_digest가 없으면 image_ref에서 digest를 조회하거나 빈 값 허용
+          DIGEST="${ARTIFACT_DIGEST:-}"
+
+          PAYLOAD=$(jq -nc \
+            --arg pkg  "$PACKAGE_NAME" \
+            --arg ver  "$VERSION" \
+            --arg dig  "$DIGEST" \
+            --arg img  "$IMAGE_REF" \
+            '{package_name:$pkg, version:$ver, artifact_digest:$dig, image_ref:$img}')
+
+          RESPONSE=$(curl -fsSL -X POST \
+            "${PORTAL_API_URL}/api/v1/releases" \
+            -H "Authorization: Bearer ${PORTAL_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "$PAYLOAD")
+
+          RELEASE_ID=$(echo "$RESPONSE" | jq -r '.data.id // empty')
+
+          if [ -z "$RELEASE_ID" ]; then
+            echo "::error::Failed to create DRAFT release. Response: ${RESPONSE}"
+            exit 1
+          fi
+
+          echo "release_id=${RELEASE_ID}" >> "$GITHUB_OUTPUT"
+          echo "Created DRAFT release: ${RELEASE_ID}"
+
+  # ──────────────────────────────────────────────────────────────
+  # Job 2: release_id 집약 (draft-register 실행 여부에 따라 분기)
+  # ──────────────────────────────────────────────────────────────
+  resolve-release-id:
+    name: Resolve Release ID
+    runs-on: ubuntu-latest
+    needs: [validate, draft-register]
+    if: always() && needs.validate.result == 'success' && (needs.draft-register.result == 'success' || needs.draft-register.result == 'skipped')
+    outputs:
+      release_id: ${{ steps.pick.outputs.release_id }}
+      image_ref: ${{ needs.validate.outputs.image_ref }}
+    steps:
+      - name: Pick release_id
+        id: pick
+        env:
+          FROM_DRAFT: ${{ needs.draft-register.outputs.release_id }}
+          FROM_INPUT: ${{ needs.validate.outputs.release_id }}
+        run: |
+          RELEASE_ID="${FROM_DRAFT:-$FROM_INPUT}"
+          if [ -z "$RELEASE_ID" ]; then
+            echo "::error::release_id could not be determined"
+            exit 1
+          fi
+          echo "release_id=${RELEASE_ID}" >> "$GITHUB_OUTPUT"
+
+  # ──────────────────────────────────────────────────────────────
+  # Job 3: SBOM 생성 (Syft)
+  # ──────────────────────────────────────────────────────────────
   sbom:
     name: Generate SBOM
     runs-on: ubuntu-latest
-    needs: validate
+    needs: resolve-release-id
     outputs:
       sbom_uri: ${{ steps.attach.outputs.sbom_uri }}
     env:
-      IMAGE_REF: ${{ github.event.inputs.image_ref }}
+      IMAGE_REF: ${{ needs.resolve-release-id.outputs.image_ref }}
       HARBOR_URL: ${{ vars.HARBOR_URL }}
       HARBOR_USER: ${{ secrets.HARBOR_USER }}
       HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
@@ -81,21 +233,21 @@ jobs:
             sbom.spdx.json:application/spdx+json
           echo "sbom_uri=${IMAGE_REF}-sbom" >> "$GITHUB_OUTPUT"
 
-  # ──────────────────────────────────────────────
-  # Job 2: CVE 스캔 (Trivy)
-  # ──────────────────────────────────────────────
+  # ──────────────────────────────────────────────────────────────
+  # Job 4: CVE 스캔 (Trivy)
+  # ──────────────────────────────────────────────────────────────
   cve-scan:
     name: CVE Scan
     runs-on: ubuntu-latest
-    needs: sbom
+    needs: [resolve-release-id, sbom]
     outputs:
       critical: ${{ steps.parse.outputs.critical }}
       high: ${{ steps.parse.outputs.high }}
       medium: ${{ steps.parse.outputs.medium }}
       low: ${{ steps.parse.outputs.low }}
     env:
-      IMAGE_REF: ${{ github.event.inputs.image_ref }}
-      RELEASE_ID: ${{ github.event.inputs.release_id }}
+      IMAGE_REF: ${{ needs.resolve-release-id.outputs.image_ref }}
+      RELEASE_ID: ${{ needs.resolve-release-id.outputs.release_id }}
       PORTAL_API_URL: ${{ vars.PORTAL_API_URL }}
       PORTAL_API_TOKEN: ${{ secrets.PORTAL_API_TOKEN }}
       HARBOR_URL: ${{ vars.HARBOR_URL }}
@@ -151,7 +303,6 @@ jobs:
 
       - name: Update portal-api cve-report (SCANNED)
         run: |
-          # jq로 JSON 빌드 — 변수를 문자열 리터럴에 직접 삽입하지 않음
           SBOM_URI="${{ needs.sbom.outputs.sbom_uri }}"
           PAYLOAD=$(jq -nc \
             --argjson critical "${{ steps.parse.outputs.critical }}" \
@@ -173,16 +324,16 @@ jobs:
           echo "::error::Critical CVEs found (${{ steps.parse.outputs.critical }}). Pipeline stopped."
           exit 1
 
-  # ──────────────────────────────────────────────
-  # Job 3: Cosign 서명
-  # ──────────────────────────────────────────────
+  # ──────────────────────────────────────────────────────────────
+  # Job 5: Cosign 서명
+  # ──────────────────────────────────────────────────────────────
   sign:
     name: Sign Image
     runs-on: ubuntu-latest
-    needs: cve-scan
+    needs: [resolve-release-id, cve-scan]
     env:
-      IMAGE_REF: ${{ github.event.inputs.image_ref }}
-      RELEASE_ID: ${{ github.event.inputs.release_id }}
+      IMAGE_REF: ${{ needs.resolve-release-id.outputs.image_ref }}
+      RELEASE_ID: ${{ needs.resolve-release-id.outputs.release_id }}
       PORTAL_API_URL: ${{ vars.PORTAL_API_URL }}
       PORTAL_API_TOKEN: ${{ secrets.PORTAL_API_TOKEN }}
       HARBOR_URL: ${{ vars.HARBOR_URL }}
@@ -201,9 +352,6 @@ jobs:
             -o /usr/local/bin/cosign && chmod +x /usr/local/bin/cosign
 
       - name: Fetch and verify release.image_ref from portal-api
-        # Fetch the canonical image_ref stored in portal-api for this release
-        # and confirm it matches the workflow input before signing anything.
-        # This prevents cross-approval: signing image A to mark release B as SIGNED.
         id: fetch_release
         run: |
           RELEASE_JSON=$(curl -fsSL \
@@ -218,7 +366,7 @@ jobs:
           fi
 
           if [ "$DB_IMAGE_REF" != "$IMAGE_REF" ]; then
-            echo "::error::image_ref mismatch — workflow input: '${IMAGE_REF}', portal-api DB: '${DB_IMAGE_REF}'"
+            echo "::error::image_ref mismatch — workflow: '${IMAGE_REF}', portal-api DB: '${DB_IMAGE_REF}'"
             exit 1
           fi
 
@@ -241,7 +389,6 @@ jobs:
             --key cosign.key \
             -- "$IMAGE_REF"
 
-          # 서명 레퍼런스를 digest 형식으로 추출
           SIG_REF=$(cosign triangulate -- "$IMAGE_REF" 2>/dev/null || echo "${IMAGE_REF}-sig")
           echo "signature=${SIG_REF}" >> "$GITHUB_OUTPUT"
 
@@ -258,7 +405,6 @@ jobs:
       - name: Update portal-api sign status (SIGNED)
         run: |
           SIG="${{ steps.cosign.outputs.signature }}"
-          # Include image_ref so portal-api can re-confirm it matches the DB value.
           PAYLOAD=$(jq -nc --arg sig "$SIG" --arg img "$IMAGE_REF" \
             '{signature: $sig, image_ref: $img}')
 
@@ -279,5 +425,5 @@ jobs:
             echo "| Release ID | \`${RELEASE_ID}\` |"
             echo "| Critical CVEs | ${{ needs.cve-scan.outputs.critical }} |"
             echo "| High CVEs | ${{ needs.cve-scan.outputs.high }} |"
-            echo "| Status | SIGNED — ready to publish |"
+            echo "| Status | SIGNED — 관리자 publish 대기 중 |"
           } >> "$GITHUB_STEP_SUMMARY"
