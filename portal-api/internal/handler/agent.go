@@ -303,16 +303,29 @@ func (h *AgentHandler) DeploymentResult(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": record})
 }
 
+const (
+	heartbeatMaxSkew       = 5 * time.Minute
+	metricsMaxKeys         = 50
+	metricsMaxValueLen     = 256
+)
+
 func (h *AgentHandler) Heartbeat(c *gin.Context) {
 	var req struct {
-		EdgeName  string         `json:"edge_name"`
-		Region    string         `json:"region"`
 		Metrics   map[string]any `json:"metrics"`
 		Timestamp time.Time      `json:"timestamp"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+
+	// Reject timestamps that are implausibly far from server time.
+	if !req.Timestamp.IsZero() {
+		skew := time.Since(req.Timestamp)
+		if skew > heartbeatMaxSkew || skew < -heartbeatMaxSkew {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "heartbeat timestamp is too far from server time"})
+			return
+		}
 	}
 
 	callerID, err := callerEdgeID(c)
@@ -329,14 +342,47 @@ func (h *AgentHandler) Heartbeat(c *gin.Context) {
 	}
 
 	if h.wsHub != nil {
+		// Fetch authoritative edge metadata from DB — never trust request body for broadcast.
+		edge, err := h.edgeRepo.FindByID(c.Request.Context(), callerID)
+		if err != nil {
+			h.logger.Warn("heartbeat broadcast skipped: edge lookup failed",
+				zap.String("edge_id", callerID.String()), zap.Error(err))
+			c.JSON(http.StatusOK, gin.H{"data": gin.H{"received": true}})
+			return
+		}
+
 		h.wsHub.Broadcast("edge.heartbeat", map[string]any{
-			"edge_id":   callerID.String(),
-			"edge_name": req.EdgeName,
-			"region":    req.Region,
-			"metrics":   req.Metrics,
-			"timestamp": req.Timestamp,
+			"edge_id":   edge.ID.String(),
+			"edge_name": edge.Name,
+			"region":    edge.Region,
+			"tenant_id": edge.TenantID.String(),
+			"metrics":   sanitizeMetrics(req.Metrics),
+			"timestamp": time.Now().UTC(),
 		})
 	}
 
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{"received": true}})
+}
+
+// sanitizeMetrics applies a key count cap and value length cap to the
+// metrics map so untrusted agent data cannot push arbitrary payloads
+// to WebSocket consumers.
+func sanitizeMetrics(raw map[string]any) map[string]any {
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make(map[string]any, min(len(raw), metricsMaxKeys))
+	for k, v := range raw {
+		if len(out) >= metricsMaxKeys {
+			break
+		}
+		if len(k) > metricsMaxValueLen {
+			continue
+		}
+		if s, ok := v.(string); ok && len(s) > metricsMaxValueLen {
+			v = s[:metricsMaxValueLen]
+		}
+		out[k] = v
+	}
+	return out
 }
