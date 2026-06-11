@@ -194,8 +194,8 @@ func (h *ApprovalHandler) Approve(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch release"})
 			return
 		}
-		if release.Status == "DRAFT" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "cannot approve: release has not been scanned (status: DRAFT)"})
+		if release.Status != domain.ReleaseStatusPublished {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("cannot approve: release is not ready for deployment (status: %s)", release.Status)})
 			return
 		}
 		getCriticalCount := func(v any) float64 {

@@ -74,7 +74,7 @@ func main() {
 	})
 
 	edgeH := handler.NewEdgeHandler(edgeRepo, logger)
-	releaseH := handler.NewReleaseHandler(releaseRepo, logger)
+	releaseH := handler.NewReleaseHandler(releaseRepo, natsSvc, logger)
 	approvalH := handler.NewApprovalHandler(approvalRepo, releaseRepo, edgeRepo, deploymentRepo, natsSvc, harborSvc, logger)
 	sessionH := handler.NewSessionHandler()
 	auditH := handler.NewAuditHandler(auditRepo, logger)
@@ -101,7 +101,8 @@ func main() {
 			releases.GET("/:id", releaseH.GetRelease)
 			releases.PATCH("/:id/cve-report", middleware.RequireRole("central-operator", "pipeline-bot"), releaseH.UpdateCveReport)
 			releases.PATCH("/:id/sign", middleware.RequireRole("central-operator", "pipeline-bot"), releaseH.SignRelease)
-			releases.POST("/:id/publish", middleware.RequireRole("central-operator"), releaseH.PublishRelease)
+			releases.POST("/:id/request-publish", middleware.RequireRole("central-operator", "pipeline-bot"), releaseH.RequestPublish)
+			releases.POST("/:id/approve-publish", middleware.RequireRole("central-operator"), releaseH.ApprovePublish)
 		}
 
 		approvals := v1.Group("/approvals")

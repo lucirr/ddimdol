@@ -151,7 +151,7 @@ jobs:
               "sbom_uri": "${{ vars.PORTAL_API_URL }}/artifacts/sbom/${{ inputs.package_name }}-${{ inputs.version }}.spdx.json"
             }'
 
-      - name: Publish release to NATS (via Portal API)
+      - name: Request publish approval (via Portal API)
         run: |
-          curl -sf --fail-with-body -X POST ${{ vars.PORTAL_API_URL }}/api/v1/releases/${{ steps.create_release.outputs.release_id }}/publish \
+          curl -sf --fail-with-body -X POST ${{ vars.PORTAL_API_URL }}/api/v1/releases/${{ steps.create_release.outputs.release_id }}/request-publish \
             -H "Authorization: Bearer ${{ secrets.PORTAL_API_TOKEN }}"

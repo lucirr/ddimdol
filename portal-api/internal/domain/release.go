@@ -9,11 +9,12 @@ import (
 type ReleaseStatus string
 
 const (
-	ReleaseStatusDraft      ReleaseStatus = "DRAFT"
-	ReleaseStatusScanned    ReleaseStatus = "SCANNED"
-	ReleaseStatusSigned     ReleaseStatus = "SIGNED"
-	ReleaseStatusPublished  ReleaseStatus = "PUBLISHED"
-	ReleaseStatusDeprecated ReleaseStatus = "DEPRECATED"
+	ReleaseStatusDraft          ReleaseStatus = "DRAFT"
+	ReleaseStatusScanned        ReleaseStatus = "SCANNED"
+	ReleaseStatusSigned         ReleaseStatus = "SIGNED"
+	ReleaseStatusPendingApproval ReleaseStatus = "PENDING_APPROVAL"
+	ReleaseStatusPublished      ReleaseStatus = "PUBLISHED"
+	ReleaseStatusDeprecated     ReleaseStatus = "DEPRECATED"
 )
 
 type Release struct {

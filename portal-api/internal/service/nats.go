@@ -76,6 +76,7 @@ type ReleasePublishedEvent struct {
 	ReleaseID   string    `json:"release_id"`
 	PackageName string    `json:"package_name"`
 	Version     string    `json:"version"`
+	ImageRef    string    `json:"image_ref"`
 	PublishedAt time.Time `json:"published_at"`
 }
 

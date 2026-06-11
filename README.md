@@ -146,40 +146,45 @@
 1. **UI 수동 생성** — 관리자가 Portal Web에서 릴리스 + 에지 노드 선택 후 `POST /api/v1/approvals` 직접 호출
 2. **edge-agent 자동 생성** — `releases.published.>` 수신 시 `POST /agent/v1/approval-requests` 자동 호출
 
-**배포 흐름 (일반)**:
+**배포 프로세스 (일반, is_urgent=false)**:
 ```
-central-operator: 릴리스 발행 (is_urgent=false)
-  → NATS releases.published.<id>
-  → edge-agent 수신
-  → POST /agent/v1/approval-requests  ← 승인 요청 자동 생성 (PENDING)
-  → edge-admin: Portal UI에서 검토 후 POST /api/v1/approvals/:id/approve
-    ※ edge-admin은 자신의 테넌트(현장) 소속 에지만 승인 가능
-  → NATS approvals.APPROVED.<id>
-  → edge-agent 수신
-  → Local Harbor에서 image pull (docker/nerdctl)
-  → kubectl apply CatalogPackage CRD
-  → Update Operator reconcile:
-      Downloading → Applying (Helm install/upgrade)
-        → HealthCheck (pod readiness polling, timeout: 5m)
-          ┌─ 성공 → phase: Ready
-          └─ 실패 + autoRollback=true → Helm rollback → phase: RolledBack
-  → edge-agent CatalogWatcher (15초 간격 polling):
-      Ready      → POST /agent/v1/deployment-result (phase: COMPLETED)
-      Failed     → POST /agent/v1/deployment-result (phase: FAILED)
-      RolledBack → POST /agent/v1/deployment-result (phase: ROLLED_BACK)
+[중앙] CI 파이프라인: 이미지 Harbor push
+[중앙] CI 파이프라인: 보안점검 실행 (Trivy CVE 스캔 + Cosign 서명)
+[중앙] CI 파이프라인: 점검 통과 시 Draft 릴리즈 등록 → PENDING_APPROVAL 상태로 발행 승인 요청
+[중앙] central-operator: Portal UI에서 POST /api/v1/releases/:id/approve-publish
+  → 릴리즈 PUBLISHED 전환 + NATS releases.published.<id> 발행
+[에지] edge-agent: releases.published.> 수신
+[에지] edge-agent: POST /agent/v1/approval-requests → 중앙에 자동 승인 요청 (PENDING)
+[중앙] edge-admin: Portal UI에서 POST /api/v1/approvals/:id/approve
+  ※ edge-admin은 자신의 테넌트(현장) 소속 에지만 승인 가능
+  → NATS approvals.APPROVED.<id> 발행
+[에지] edge-agent: approvals.APPROVED.> 수신
+[에지] edge-agent: Local Harbor에서 image pull (docker/nerdctl)
+[에지] kubectl apply CatalogPackage CRD → Update Operator reconcile:
+        Downloading → Applying (Helm install/upgrade)
+          → HealthCheck (pod readiness polling, timeout: 5m)
+            ┌─ 성공 → phase: Ready
+            └─ 실패 + autoRollback=true → Helm rollback → phase: RolledBack
+[에지] CatalogWatcher (15초 간격 polling):
+        Ready      → POST /agent/v1/deployment-result (phase: COMPLETED)
+        Failed     → POST /agent/v1/deployment-result (phase: FAILED)
+        RolledBack → POST /agent/v1/deployment-result (phase: ROLLED_BACK)
 ```
 
-**배포 흐름 (긴급 패치, is_urgent=true)**:
+**배포 프로세스 (긴급 패치, is_urgent=true)**:
 ```
-central-operator: 릴리스 발행 (is_urgent=true)
-  → NATS releases.published.<id>
-  → edge-agent 수신
-  → POST /agent/v1/approval-requests
-    → portal-api: is_urgent 확인 → 즉시 APPROVED 처리 + NATS approvals.APPROVED.<id> 발행
-  → edge-agent 수신 (edge-admin 개입 없음)
-  → Local Harbor에서 image pull → kubectl apply CatalogPackage CRD
-  → Update Operator reconcile (동일: HealthCheck + AutoRollback 포함)
-  → CatalogWatcher → POST /agent/v1/deployment-result
+[중앙] CI 파이프라인: 이미지 Harbor push
+[중앙] CI 파이프라인: 보안점검 실행 (Trivy CVE 스캔 + Cosign 서명)
+[중앙] CI 파이프라인: 점검 통과 시 Draft 릴리즈 등록 → PENDING_APPROVAL 상태로 발행 승인 요청
+[중앙] central-operator: POST /api/v1/releases/:id/approve-publish (is_urgent=true 포함)
+  → 릴리즈 PUBLISHED 전환 + NATS releases.published.<id> 발행
+[에지] edge-agent: releases.published.> 수신
+[에지] edge-agent: POST /agent/v1/approval-requests
+  → portal-api: is_urgent 확인 → 즉시 APPROVED 처리 + NATS approvals.APPROVED.<id> 발행
+[에지] edge-agent: approvals.APPROVED.> 수신 (edge-admin 개입 없음)
+[에지] Local Harbor에서 image pull → kubectl apply CatalogPackage CRD
+[에지] Update Operator reconcile (동일: HealthCheck + AutoRollback 포함)
+[에지] CatalogWatcher → POST /agent/v1/deployment-result
 ```
 
 ## 컴포넌트
@@ -195,15 +200,16 @@ central-operator: 릴리스 발행 (is_urgent=true)
 ## 핵심 기능
 
 ### 릴리스 관리
-외부 이미지를 Harbor에 등록 후 보안 점검을 거쳐 배포합니다.  
-상태 흐름: `DRAFT → SCANNED → SIGNED → PUBLISHED`
+외부 이미지를 Harbor에 등록 후 보안 점검과 발행 승인을 거쳐 배포합니다.  
+상태 흐름: `DRAFT → SCANNED → SIGNED → PENDING_APPROVAL → PUBLISHED`
 
 | 단계 | 트리거 | 설명 |
 |------|--------|------|
-| `DRAFT` | 관리자 `POST /api/v1/releases` | Harbor image_ref 등록 |
+| `DRAFT` | CI 파이프라인 `POST /api/v1/releases` | Harbor image_ref 등록 |
 | `SCANNED` | Gitea Actions (Syft + Trivy) | SBOM 생성, CVE 스캔 결과 저장. Critical CVE 있으면 이후 단계 차단 |
-| `SIGNED` | Gitea Actions (Cosign) | 조직 내부 키로 서명 — "검토 완료" 승인 의미 |
-| `PUBLISHED` | 관리자 `POST /api/v1/releases/:id/publish` | NATS 이벤트 발행 → 에지 배포 시작 |
+| `SIGNED` | Gitea Actions (Cosign) | 조직 내부 키로 서명 |
+| `PENDING_APPROVAL` | CI 파이프라인 `POST /api/v1/releases/:id/request-publish` | 발행 승인 대기. CI(`pipeline-bot`)가 요청하며, 이 시점에는 에지에 아무 이벤트도 발행되지 않음 |
+| `PUBLISHED` | central-operator `POST /api/v1/releases/:id/approve-publish` | 담당자가 최종 승인. NATS 이벤트 발행 → 에지 배포 시작 |
 
 **보안 점검 실행 방법**: Gitea UI → Actions 탭 → "Security Scan" → Run workflow  
 입력값: `release_id` (Portal UUID), `image_ref` (Harbor 주소)
@@ -211,12 +217,13 @@ central-operator: 릴리스 발행 (is_urgent=true)
 파이프라인: `.gitea/workflows/security-scan.yml`
 - ① **Syft**: SBOM(SPDX JSON) 생성 → Harbor OCI referrer로 attach
 - ② **Trivy**: CVE 스캔 → `PATCH /api/v1/releases/:id/cve-report` → `SCANNED`
-- ③ **Critical CVE 차단**: Critical > 0 이면 파이프라인 실패, 서명 단계 진입 불가
+- ③ **Critical CVE 차단**: Critical > 0 이면 파이프라인 실패, 이후 단계 진입 불가
 - ④ **Cosign**: 내부 키로 이미지 서명 → `PATCH /api/v1/releases/:id/sign` → `SIGNED`
+- ⑤ **발행 승인 요청**: `POST /api/v1/releases/:id/request-publish` → `PENDING_APPROVAL`
 
-- **발행**: `SCANNED` 또는 `SIGNED` 상태에서만 가능. Critical CVE 있으면 발행 거부
-- **긴급 패치**: `is_urgent=true` 설정 시 에지 관리자 승인 없이 자동 배포
-- **NATS 이벤트**: 발행 시 `releases.published.<id>` 이벤트 → edge-agent 승인 요청 자동 생성
+- **최종 발행**: `PENDING_APPROVAL` 상태에서만 가능. `central-operator` 역할 전용
+- **긴급 패치**: `is_urgent=true` + `PUBLISHED` 상태 릴리스에 한해 에지 관리자 승인 없이 자동 배포
+- **NATS 이벤트**: `approve-publish` 시 `releases.published.<id>` 이벤트 → edge-agent 승인 요청 자동 생성
 
 ### 승인 워크플로
 엣지 노드별 배포 승인 요청을 생성하고 `PENDING → APPROVED → APPLIED` 흐름으로 처리합니다.  
@@ -260,7 +267,8 @@ edge_nodes                  releases                    approval_requests
   k8s_version                 signature / signed_by       requested_by / decision_by
   capabilities (JSONB)        status                      idempotency_key
   labels (JSONB)                DRAFT/SCANNED/SIGNED      version (optimistic lock)
-                                PUBLISHED/DEPRECATED      scheduled_at / deferred_until
+                                PENDING_APPROVAL          scheduled_at / deferred_until
+                                PUBLISHED/DEPRECATED
 
 deployment_records          remote_sessions
   id (UUID)                   id (UUID)
@@ -370,7 +378,8 @@ make run
 | GET | `/api/v1/releases` | 릴리스 목록 |
 | PATCH | `/api/v1/releases/:id/cve-report` | CVE 리포트 업데이트 (SCANNED) |
 | PATCH | `/api/v1/releases/:id/sign` | 서명 정보 등록 (SIGNED) |
-| POST | `/api/v1/releases/:id/publish` | 릴리스 발행 |
+| POST | `/api/v1/releases/:id/request-publish` | 발행 승인 요청 (PENDING_APPROVAL) — pipeline-bot/central-operator |
+| POST | `/api/v1/releases/:id/approve-publish` | 발행 최종 승인 (PUBLISHED + NATS 발행) — central-operator 전용 |
 | POST/GET | `/api/v1/approvals` | 승인 요청 생성/목록 |
 | POST | `/api/v1/approvals/:id/approve` | 승인 |
 | POST | `/api/v1/approvals/:id/reject` | 거절 |

@@ -15,15 +15,17 @@ import (
 
 	"github.com/didimdol/portal-api/internal/domain"
 	"github.com/didimdol/portal-api/internal/repository"
+	"github.com/didimdol/portal-api/internal/service"
 )
 
 type ReleaseHandler struct {
 	repo   repository.ReleaseRepository
+	nats   *service.NatsService
 	logger *zap.Logger
 }
 
-func NewReleaseHandler(repo repository.ReleaseRepository, logger *zap.Logger) *ReleaseHandler {
-	return &ReleaseHandler{repo: repo, logger: logger}
+func NewReleaseHandler(repo repository.ReleaseRepository, nats *service.NatsService, logger *zap.Logger) *ReleaseHandler {
+	return &ReleaseHandler{repo: repo, nats: nats, logger: logger}
 }
 
 func (h *ReleaseHandler) CreateRelease(c *gin.Context) {
@@ -240,7 +242,10 @@ func (h *ReleaseHandler) SignRelease(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": release})
 }
 
-func (h *ReleaseHandler) PublishRelease(c *gin.Context) {
+// RequestPublish transitions a SCANNED/SIGNED release to PENDING_APPROVAL.
+// Only pipeline-bot or central-operator may call this; a separate ApprovePublish
+// step (central-operator only) is required before the release reaches PUBLISHED.
+func (h *ReleaseHandler) RequestPublish(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
@@ -254,7 +259,7 @@ func (h *ReleaseHandler) PublishRelease(c *gin.Context) {
 	}
 
 	if release.Status != domain.ReleaseStatusScanned && release.Status != domain.ReleaseStatusSigned {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "release must be SCANNED or SIGNED to publish"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "release must be SCANNED or SIGNED to request publish"})
 		return
 	}
 
@@ -262,15 +267,44 @@ func (h *ReleaseHandler) PublishRelease(c *gin.Context) {
 		switch v := critical.(type) {
 		case float64:
 			if v > 0 {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "critical CVEs found, cannot publish"})
+				c.JSON(http.StatusBadRequest, gin.H{"error": "critical CVEs found, cannot request publish"})
 				return
 			}
 		case int:
 			if v > 0 {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "critical CVEs found, cannot publish"})
+				c.JSON(http.StatusBadRequest, gin.H{"error": "critical CVEs found, cannot request publish"})
 				return
 			}
 		}
+	}
+
+	release.Status = domain.ReleaseStatusPendingApproval
+	if err := h.repo.Save(c.Request.Context(), release); err != nil {
+		h.logger.Error("request publish", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": release})
+}
+
+// ApprovePublish transitions a PENDING_APPROVAL release to PUBLISHED and fires
+// the NATS release notification. Only central-operator may call this.
+func (h *ReleaseHandler) ApprovePublish(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+
+	release, err := h.repo.FindByID(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "release not found"})
+		return
+	}
+
+	if release.Status != domain.ReleaseStatusPendingApproval {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "release must be PENDING_APPROVAL to approve publish"})
+		return
 	}
 
 	now := time.Now()
@@ -278,9 +312,20 @@ func (h *ReleaseHandler) PublishRelease(c *gin.Context) {
 	release.PublishedAt = &now
 
 	if err := h.repo.Save(c.Request.Context(), release); err != nil {
-		h.logger.Error("publish release", zap.Error(err))
+		h.logger.Error("approve publish", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+
+	if h.nats != nil {
+		_ = h.nats.PublishReleaseNotification(c.Request.Context(), service.ReleasePublishedEvent{
+			ReleaseID:   release.ID.String(),
+			PackageName: release.PackageName,
+			Version:     release.Version,
+			ImageRef:    release.ImageRef,
+			PublishedAt: now,
+		})
+	}
+
 	c.JSON(http.StatusOK, gin.H{"data": release})
 }

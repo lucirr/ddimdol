@@ -60,6 +60,8 @@ Edge NATS (LeafNode) ──outbound──> 중앙 NATS (LeafNode Hub :7422)
 - DMZ/방화벽 뒤 Edge에 실시간 이벤트 전달
 - 운영 복잡도를 낮추고 싶은 소~중규모
 - 메시지 볼륨이 크지 않은 제어 채널 용도
+- **Push 기반 subscribe** — Edge Agent는 subject를 구독 등록해두면 메시지가 도착하는 순간 콜백이 호출됨. 폴링 없이 대기하므로 CPU 사용 거의 없음
+- **Durable Consumer** — Agent 오프라인 구간에 발행된 메시지를 JetStream이 보관, 재접속 시 순서대로 재전달. `msg.Ack()`로 처리 완료를 확인하므로 중복 수신 방지
 
 ## 결론
 
