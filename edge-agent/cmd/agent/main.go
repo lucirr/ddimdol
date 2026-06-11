@@ -100,15 +100,13 @@ func main() {
 	// -------------------------------------------------------------------------
 	rep := reporter.New(cfg.CentralAPIURL, cfg.EdgeID, httpClient, logger)
 
-	hbSender, err := heartbeat.New(
-		cfg.EdgeID, cfg.EdgeName, cfg.EdgeRegion,
-		nc, js,
+	hbSender := heartbeat.New(
+		cfg.EdgeName, cfg.EdgeRegion,
+		cfg.CentralAPIURL,
+		httpClient,
 		cfg.HeartbeatInterval,
 		logger,
 	)
-	if err != nil {
-		logger.Fatal("heartbeat sender init failed", zap.Error(err))
-	}
 
 	upd := updater.New(
 		cfg.EdgeID,

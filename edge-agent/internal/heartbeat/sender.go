@@ -1,59 +1,53 @@
 package heartbeat
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"time"
 
-	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 	"github.com/your-org/edge-agent/internal/collector"
 	"go.uber.org/zap"
 )
 
-// HeartbeatPayload is the message published to NATS on every tick.
-type HeartbeatPayload struct {
-	EdgeID    string             `json:"edge_id"`
+// payload is the body sent to POST /agent/v1/heartbeat.
+type payload struct {
 	EdgeName  string             `json:"edge_name"`
 	Region    string             `json:"region"`
-	Metrics   *collector.Metrics `json:"metrics"`
+	Metrics   *collector.Metrics `json:"metrics,omitempty"`
 	Timestamp time.Time          `json:"timestamp"`
 }
 
-// Sender publishes heartbeat messages to NATS JetStream at a fixed interval.
+// Sender posts heartbeat messages to the central Agent API at a fixed interval.
 type Sender struct {
-	edgeID   string
-	edgeName string
-	region   string
-	nc       *nats.Conn
-	js       jetstream.JetStream
-	logger   *zap.Logger
-	interval time.Duration
+	edgeName   string
+	region     string
+	centralURL string
+	client     *http.Client
+	logger     *zap.Logger
+	interval   time.Duration
 }
 
-// New creates a Sender. Heartbeats are published to the central EDGE_EVENTS
-// stream (managed by portal-api) via subject "edge.heartbeat.<edgeID>".
-// No stream creation is needed here — the stream already covers "edge.>" subjects.
 func New(
-	edgeID, edgeName, region string,
-	nc *nats.Conn,
-	js jetstream.JetStream,
+	edgeName, region string,
+	centralURL string,
+	client *http.Client,
 	interval time.Duration,
 	logger *zap.Logger,
-) (*Sender, error) {
+) *Sender {
 	return &Sender{
-		edgeID:   edgeID,
-		edgeName: edgeName,
-		region:   region,
-		nc:       nc,
-		js:       js,
-		logger:   logger,
-		interval: interval,
-	}, nil
+		edgeName:   edgeName,
+		region:     region,
+		centralURL: centralURL,
+		client:     client,
+		logger:     logger,
+		interval:   interval,
+	}
 }
 
-// Start blocks until ctx is cancelled, publishing heartbeats on each tick.
+// Start blocks until ctx is cancelled, posting heartbeats on each tick.
 func (s *Sender) Start(ctx context.Context) {
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
@@ -63,7 +57,7 @@ func (s *Sender) Start(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			s.sendHeartbeat(ctx)
+			s.send(ctx)
 		case <-ctx.Done():
 			s.logger.Info("heartbeat sender stopped")
 			return
@@ -71,32 +65,43 @@ func (s *Sender) Start(ctx context.Context) {
 	}
 }
 
-func (s *Sender) sendHeartbeat(ctx context.Context) {
+func (s *Sender) send(ctx context.Context) {
 	metrics, err := collector.Collect()
 	if err != nil {
 		s.logger.Warn("metrics collection failed", zap.Error(err))
 		metrics = nil
 	}
 
-	payload := HeartbeatPayload{
-		EdgeID:    s.edgeID,
+	body, err := json.Marshal(payload{
 		EdgeName:  s.edgeName,
 		Region:    s.region,
 		Metrics:   metrics,
 		Timestamp: time.Now().UTC(),
-	}
-
-	data, err := json.Marshal(payload)
+	})
 	if err != nil {
 		s.logger.Error("marshal heartbeat payload", zap.Error(err))
 		return
 	}
 
-	subject := fmt.Sprintf("edge.heartbeat.%s", s.edgeID)
-	if _, err = s.js.Publish(ctx, subject, data); err != nil {
-		s.logger.Error("publish heartbeat", zap.String("subject", subject), zap.Error(err))
+	url := s.centralURL + "/agent/v1/heartbeat"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		s.logger.Error("build heartbeat request", zap.Error(err))
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		s.logger.Warn("heartbeat POST failed", zap.Error(err))
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		s.logger.Warn("heartbeat unexpected status", zap.String("status", fmt.Sprintf("%d", resp.StatusCode)))
 		return
 	}
 
-	s.logger.Debug("heartbeat sent", zap.String("subject", subject))
+	s.logger.Debug("heartbeat sent")
 }

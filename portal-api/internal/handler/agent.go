@@ -20,7 +20,13 @@ type AgentHandler struct {
 	deploymentRepo repository.DeploymentRepository
 	releaseRepo    repository.ReleaseRepository
 	nats           *service.NatsService
+	wsHub          wsbroadcaster
 	logger         *zap.Logger
+}
+
+// wsbroadcaster abstracts hub.Hub to avoid an import cycle.
+type wsbroadcaster interface {
+	Broadcast(event string, payload any)
 }
 
 func NewAgentHandler(
@@ -29,6 +35,7 @@ func NewAgentHandler(
 	deploymentRepo repository.DeploymentRepository,
 	releaseRepo repository.ReleaseRepository,
 	nats *service.NatsService,
+	wsHub wsbroadcaster,
 	logger *zap.Logger,
 ) *AgentHandler {
 	return &AgentHandler{
@@ -37,6 +44,7 @@ func NewAgentHandler(
 		deploymentRepo: deploymentRepo,
 		releaseRepo:    releaseRepo,
 		nats:           nats,
+		wsHub:          wsHub,
 		logger:         logger,
 	}
 }
@@ -293,4 +301,42 @@ func (h *AgentHandler) DeploymentResult(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"data": record})
+}
+
+func (h *AgentHandler) Heartbeat(c *gin.Context) {
+	var req struct {
+		EdgeName  string         `json:"edge_name"`
+		Region    string         `json:"region"`
+		Metrics   map[string]any `json:"metrics"`
+		Timestamp time.Time      `json:"timestamp"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	callerID, err := callerEdgeID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+
+	edgeSvc := service.NewEdgeService(h.edgeRepo)
+	if err := edgeSvc.RecordHeartbeat(c.Request.Context(), callerID); err != nil {
+		h.logger.Warn("heartbeat record failed", zap.String("edge_id", callerID.String()), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record heartbeat"})
+		return
+	}
+
+	if h.wsHub != nil {
+		h.wsHub.Broadcast("edge.heartbeat", map[string]any{
+			"edge_id":   callerID.String(),
+			"edge_name": req.EdgeName,
+			"region":    req.Region,
+			"metrics":   req.Metrics,
+			"timestamp": req.Timestamp,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"received": true}})
 }

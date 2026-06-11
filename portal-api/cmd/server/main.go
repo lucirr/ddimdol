@@ -1,13 +1,11 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"github.com/didimdol/portal-api/internal/config"
@@ -65,29 +63,6 @@ func main() {
 	// WebSocket hub
 	wsHub := hub.New(logger)
 	go wsHub.Run()
-
-	// NATS heartbeat → WebSocket broadcast
-	if natsSvc != nil {
-		go func() {
-			err := natsSvc.SubscribeHeartbeats(context.Background(), func(evt service.HeartbeatEvent) {
-				// Update edge status in DB
-				edgeSvc := service.NewEdgeService(edgeRepo)
-				edgeID, parseErr := uuid.Parse(evt.EdgeID)
-				if parseErr != nil {
-					logger.Warn("heartbeat invalid edge_id", zap.String("edge_id", evt.EdgeID), zap.Error(parseErr))
-				} else {
-					if dbErr := edgeSvc.RecordHeartbeat(context.Background(), edgeID); dbErr != nil {
-						logger.Warn("heartbeat record failed", zap.Error(dbErr))
-					}
-				}
-				// Broadcast to WebSocket clients
-				wsHub.Broadcast("edge.heartbeat", evt)
-			})
-			if err != nil {
-				logger.Warn("heartbeat subscription failed", zap.Error(err))
-			}
-		}()
-	}
 
 	// Public API router (JWT-protected)
 	apiRouter := gin.New()
@@ -164,9 +139,10 @@ func main() {
 	agentRouter.Use(gin.Recovery())
 	agentRouter.Use(middleware.AgentMTLSIdentity())
 
-	agentH := handler.NewAgentHandler(edgeRepo, approvalRepo, deploymentRepo, releaseRepo, natsSvc, logger)
+	agentH := handler.NewAgentHandler(edgeRepo, approvalRepo, deploymentRepo, releaseRepo, natsSvc, wsHub, logger)
 	agentV1 := agentRouter.Group("/agent/v1")
 	{
+		agentV1.POST("/heartbeat", agentH.Heartbeat)
 		agentV1.POST("/approval-requests", agentH.CreateApprovalRequest)
 		agentV1.POST("/download-progress", agentH.DownloadProgress)
 		agentV1.POST("/deployment-result", agentH.DeploymentResult)
