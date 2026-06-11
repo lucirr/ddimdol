@@ -31,11 +31,18 @@ func NewWsHandler(h *hub.Hub, logger *zap.Logger) *WsHandler {
 
 // HandleEdgeEvents upgrades the request to a WebSocket connection and streams
 // edge events to the client until it disconnects.
+// The client's tenant_id (from the JWT set by Auth middleware) is bound to the
+// connection so BroadcastTenant can filter events by tenant.
+// central-operators have an empty tenant_id claim and receive all events.
 func (h *WsHandler) HandleEdgeEvents(c *gin.Context) {
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		h.logger.Error("ws upgrade failed", zap.Error(err))
 		return
 	}
-	h.hub.ServeClient(conn)
+
+	tenantID, _ := c.Get("tenant_id")
+	tenantIDStr, _ := tenantID.(string)
+
+	h.hub.ServeClient(conn, tenantIDStr)
 }

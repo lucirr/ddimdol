@@ -27,6 +27,7 @@ type AgentHandler struct {
 // wsbroadcaster abstracts hub.Hub to avoid an import cycle.
 type wsbroadcaster interface {
 	Broadcast(event string, payload any)
+	BroadcastTenant(tenantID, event string, payload any)
 }
 
 func NewAgentHandler(
@@ -351,11 +352,10 @@ func (h *AgentHandler) Heartbeat(c *gin.Context) {
 			return
 		}
 
-		h.wsHub.Broadcast("edge.heartbeat", map[string]any{
+		h.wsHub.BroadcastTenant(edge.TenantID.String(), "edge.heartbeat", map[string]any{
 			"edge_id":   edge.ID.String(),
 			"edge_name": edge.Name,
 			"region":    edge.Region,
-			"tenant_id": edge.TenantID.String(),
 			"metrics":   sanitizeMetrics(req.Metrics),
 			"timestamp": time.Now().UTC(),
 		})
@@ -364,9 +364,10 @@ func (h *AgentHandler) Heartbeat(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{"received": true}})
 }
 
-// sanitizeMetrics applies a key count cap and value length cap to the
-// metrics map so untrusted agent data cannot push arbitrary payloads
-// to WebSocket consumers.
+// sanitizeMetrics allows only flat scalar values (string, number, bool).
+// Nested objects, arrays, and nil are dropped. Keys and string values are
+// length-capped so untrusted agent data cannot push oversized payloads to
+// WebSocket consumers.
 func sanitizeMetrics(raw map[string]any) map[string]any {
 	if len(raw) == 0 {
 		return nil
@@ -379,10 +380,17 @@ func sanitizeMetrics(raw map[string]any) map[string]any {
 		if len(k) > metricsMaxValueLen {
 			continue
 		}
-		if s, ok := v.(string); ok && len(s) > metricsMaxValueLen {
-			v = s[:metricsMaxValueLen]
+		switch val := v.(type) {
+		case string:
+			if len(val) > metricsMaxValueLen {
+				val = val[:metricsMaxValueLen]
+			}
+			out[k] = val
+		case float64, float32, int, int32, int64, uint, uint32, uint64, bool:
+			out[k] = val
+		default:
+			// drop nested objects, arrays, nil
 		}
-		out[k] = v
 	}
 	return out
 }

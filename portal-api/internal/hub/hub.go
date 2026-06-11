@@ -10,9 +10,10 @@ import (
 
 // Client represents a single connected WebSocket client.
 type Client struct {
-	conn   *websocket.Conn
-	send   chan []byte
-	logger *zap.Logger
+	conn     *websocket.Conn
+	send     chan []byte
+	tenantID string // empty string means central-operator (sees all tenants)
+	logger   *zap.Logger
 }
 
 // Hub maintains the set of active clients and broadcasts messages to them.
@@ -67,14 +68,11 @@ func (h *Hub) Run() {
 	}
 }
 
-// Broadcast serialises a typed event envelope and sends it to all connected clients.
+// Broadcast sends an event to all connected clients regardless of tenant.
+// Use only for system-wide events (e.g. platform notifications).
 func (h *Hub) Broadcast(eventType string, payload any) {
-	msg, err := json.Marshal(map[string]any{
-		"type":    eventType,
-		"payload": payload,
-	})
-	if err != nil {
-		h.logger.Error("ws broadcast marshal", zap.Error(err))
+	msg := marshal(h.logger, eventType, payload)
+	if msg == nil {
 		return
 	}
 	select {
@@ -84,13 +82,54 @@ func (h *Hub) Broadcast(eventType string, payload any) {
 	}
 }
 
-// ServeClient registers the connection, then blocks reading until the client disconnects.
-func (h *Hub) ServeClient(conn *websocket.Conn) {
-	client := &Client{conn: conn, send: make(chan []byte, 64), logger: h.logger}
+// BroadcastTenant sends an event only to clients whose tenantID matches.
+// Clients registered with an empty tenantID (central-operators) receive
+// events for every tenant.
+func (h *Hub) BroadcastTenant(tenantID, eventType string, payload any) {
+	msg := marshal(h.logger, eventType, payload)
+	if msg == nil {
+		return
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for client := range h.clients {
+		if client.tenantID != "" && client.tenantID != tenantID {
+			continue
+		}
+		select {
+		case client.send <- msg:
+		default:
+			h.logger.Warn("ws send buffer full, dropping message for client")
+		}
+	}
+}
+
+// ServeClient registers the connection with the given tenantID, then blocks
+// reading until the client disconnects. Pass an empty tenantID for
+// central-operators who should receive events for all tenants.
+func (h *Hub) ServeClient(conn *websocket.Conn, tenantID string) {
+	client := &Client{
+		conn:     conn,
+		send:     make(chan []byte, 64),
+		tenantID: tenantID,
+		logger:   h.logger,
+	}
 	h.register <- client
 
 	go client.writePump()
 	client.readPump(h)
+}
+
+func marshal(logger *zap.Logger, eventType string, payload any) []byte {
+	msg, err := json.Marshal(map[string]any{
+		"type":    eventType,
+		"payload": payload,
+	})
+	if err != nil {
+		logger.Error("ws marshal", zap.Error(err))
+		return nil
+	}
+	return msg
 }
 
 func (c *Client) writePump() {
